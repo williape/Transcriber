@@ -38,11 +38,14 @@ final class PanelController {
         }
     }
 
+    /// What to do when Esc is pressed while the panel is visible.
+    var onEscape: (() -> Void)?
+
     private func sessionChanged() {
         switch appState.session {
-        case .recording, .finishing, .inserting:
+        case .recording, .finishing, .inserting, .downloadingModel:
             show()
-        case .idle, .transcribingFile, .downloadingModel:
+        case .idle, .transcribingFile:
             hide()
         }
     }
@@ -68,7 +71,7 @@ final class PanelController {
     private func makePanel() -> FloatingPanel {
         let size = DictationView.panelSize
         let panel = FloatingPanel(contentRect: NSRect(origin: .zero, size: size))
-        panel.contentView = NSHostingView(rootView: DictationView())
+        panel.contentView = NSHostingView(rootView: DictationView(appState: appState))
         self.panel = panel
         return panel
     }
@@ -86,7 +89,7 @@ final class PanelController {
     private func registerEscape() {
         guard escapeHotkeyID == nil else { return }
         escapeHotkeyID = hotkeyManager.register(.escape) { [weak self] in
-            self?.appState.cancelDictation()
+            self?.onEscape?()
         }
         if escapeHotkeyID == nil {
             logger.error("Could not register Esc while panel visible")

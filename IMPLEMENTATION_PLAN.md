@@ -119,11 +119,11 @@ Each phase ends buildable and manually verifiable. Claude Code can verify *compi
 - `HotkeyManager` with `RegisterEventHotKey` (⌥Space), toggling a logged state; `AppState` machine in place; Preferences storage.
 - **Verify:** icon appears, no Dock icon, ⌥Space toggles state (visible via icon change), app quits cleanly.
 
-### Phase 2 — Floating panel — **implemented 2026-07-23, awaiting manual verify**
+### Phase 2 — Floating panel — **✅ verified 2026-07-23**
 - Non-activating `NSPanel` (decision 4) with `NSVisualEffectView` blur, hidden title bar, appears centered near bottom of active screen, all Spaces, Esc/hotkey dismisses. Placeholder text.
 - **Verify:** panel appears over a full-screen app; focus stays in the previously active text field (type — your keystrokes must land in the target app, not the panel).
 
-### Phase 3 — Live transcription
+### Phase 3 — Live transcription — **implemented 2026-07-23, awaiting manual verify**
 - `ModelAssetManager`: check `SpeechTranscriber.installedLocales`; if missing, run `AssetInventory.assetInstallationRequest(supporting:)` with progress UI in the panel.
 - `MicrophoneCapture` (AVAudioEngine tap, converter) + `TranscriptionEngine` per the pipeline sketch; mic permission prompt on first use.
 - Panel renders committed text `.primary`, volatile `.secondary`, auto-scrolling.

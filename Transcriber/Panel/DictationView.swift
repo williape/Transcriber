@@ -5,33 +5,83 @@
 
 import SwiftUI
 
-/// Panel content. Phase 2: placeholder; Phase 3 replaces the placeholder text
-/// with committed (.primary) + volatile (.secondary) transcription.
+/// Panel content: live transcript (committed .primary + volatile .secondary),
+/// model download progress, or a listening placeholder.
 struct DictationView: View {
-    static let panelSize = NSSize(width: 420, height: 64)
+    let appState: AppState
+
+    static let panelSize = NSSize(width: 460, height: 132)
 
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "mic.fill")
-                .font(.system(size: 20))
-                .foregroundStyle(.red)
-                .symbolEffect(.pulse, isActive: true)
-            Text("Listening…")
-                .font(.system(size: 16))
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text("esc to cancel")
-                .font(.system(size: 11))
-                .foregroundStyle(.tertiary)
+        content
+            .padding(.horizontal, 20)
+            .padding(.vertical, 14)
+            .frame(width: Self.panelSize.width, height: Self.panelSize.height)
+            .background(VisualEffectBackground())
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .strokeBorder(.white.opacity(0.12))
+            )
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch appState.session {
+        case .downloadingModel(let progress):
+            downloadView(progress: progress)
+        default:
+            transcriptView
         }
-        .padding(.horizontal, 20)
-        .frame(width: Self.panelSize.width, height: Self.panelSize.height, alignment: .leading)
-        .background(VisualEffectBackground())
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .strokeBorder(.white.opacity(0.12))
-        )
+    }
+
+    private func downloadView(progress: Double) -> some View {
+        VStack(spacing: 8) {
+            Text("Downloading speech model… \(Int(progress * 100))%")
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+            ProgressView(value: progress)
+        }
+    }
+
+    private var transcriptView: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "mic.fill")
+                .font(.system(size: 18))
+                .foregroundStyle(isRecording ? Color.red : Color.secondary)
+                .symbolEffect(.pulse, isActive: isRecording)
+                .padding(.top, 2)
+
+            ScrollView(.vertical) {
+                Group {
+                    if appState.committedText.isEmpty && appState.volatileText.isEmpty {
+                        Text(isRecording ? "Listening…" : "…")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("\(Text(appState.committedText))\(Text(appState.volatileText).foregroundStyle(.secondary))")
+                    }
+                }
+                .font(.system(size: 15))
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .defaultScrollAnchor(.bottom)
+
+            VStack(alignment: .trailing) {
+                if appState.session == .finishing {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Text("esc to cancel")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer()
+            }
+        }
+    }
+
+    private var isRecording: Bool {
+        appState.session == .recording
     }
 }
 
@@ -46,8 +96,4 @@ struct VisualEffectBackground: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
-}
-
-#Preview {
-    DictationView()
 }
