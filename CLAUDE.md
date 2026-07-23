@@ -1,0 +1,81 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+# Transcriber — macOS menu bar dictation & transcription app (SwiftUI, macOS 26+)
+
+Native menu-bar utility for live dictation and audio-file transcription using Apple's `SpeechAnalyzer` framework (WWDC25). Fully on-device after a one-time model download.
+
+## Key documents
+
+- `IMPLEMENTATION_PLAN.md` — the roadmap: architecture, phased milestones, permissions matrix, risks. **Keep its phase status current as work progresses.**
+- `PRD - Native macOS Dictation & Transcription utility.md` — product requirements and API mapping. Where the two disagree, the plan's §1 "Decisions & corrections" wins.
+
+## Build
+
+```sh
+xcodebuild -project Transcriber.xcodeproj -scheme Transcriber \
+  -configuration Debug -derivedDataPath build build
+```
+
+App output: `build/Build/Products/Debug/Transcriber.app`
+
+## Run / stop
+
+Runtime behavior (hotkeys, mic, permission prompts) needs the user at the keyboard; Claude Code verifies compilation, the user does the per-phase manual check (plan §7).
+
+```sh
+pkill -x Transcriber; open build/Build/Products/Debug/Transcriber.app
+```
+
+## Tests
+
+Unit tests use Swift Testing (`@Test` / `#expect`), UI tests use XCTest.
+
+```sh
+# All tests
+xcodebuild -project Transcriber.xcodeproj -scheme Transcriber \
+  -derivedDataPath build test
+
+# Single test (unit target / one suite / one test)
+xcodebuild ... test -only-testing:TranscriberTests
+xcodebuild ... test -only-testing:TranscriberTests/TranscriberTests/example
+```
+
+## Logs
+
+Use `os.Logger(subsystem: "com.pwilliams.Transcriber", ...)` everywhere.
+
+```sh
+log stream --predicate 'subsystem == "com.pwilliams.Transcriber"' --level debug
+```
+
+## Rules
+
+- 100% native Apple frameworks. **NO third-party packages, ever.**
+- New Swift files: just create them under `Transcriber/` — the target uses folder-synchronized groups (`PBXFileSystemSynchronizedRootGroup`), no pbxproj edits needed.
+- App is `LSUIElement` (menu-bar only, no Dock icon). **App Sandbox is intentionally OFF** — direct text insertion via CGEvent requires it (rules out Mac App Store; that's accepted).
+- The floating panel must be a **non-activating `NSPanel`** and never become key window — direct insertion into the previously focused app depends on it. Dismissal is Esc / hotkey again / click outside / insertion complete, never "loss of focus."
+- Global hotkey uses Carbon `RegisterEventHotKey` (no TCC permission, consumes the event) — not `NSEvent.addGlobalMonitorForEvents`.
+- File transcription uses `analyzer.analyzeSequence(from: AVAudioFile)` + `finalizeAndFinish(through:)`; there is no `AssetInputSequenceProvider` API.
+- `SpeechAnalyzer` is new — confirm exact signatures against the installed Xcode SDK headers, not blog posts.
+
+## Architecture
+
+Planned layout (plan §3) — single source of truth is `AppState`, an observable session state machine: `idle → recording(live) → finishing → inserting → idle`, plus parallel `transcribingFile(progress)` and `downloadingModel(progress)` modes; the menu bar icon reflects state.
+
+- `MenuBar/StatusItemController` — `NSStatusItem`, menu, icon states
+- `Hotkey/HotkeyManager` — `RegisterEventHotKey` wrapper (default ⌥Space, configurable)
+- `Panel/` — non-activating `NSPanel` host + SwiftUI dictation view (committed text `.primary`, volatile `.secondary`)
+- `Speech/` — `TranscriptionEngine` (SpeechAnalyzer + SpeechTranscriber), `MicrophoneCapture` (AVAudioEngine tap → AVAudioConverter to `SpeechAnalyzer.bestAvailableAudioFormat`), `ModelAssetManager` (`AssetInventory` model install), `FileTranscriber`
+- `Output/OutputRouter` — clipboard write always; CGEvent ⌘V insertion when Accessibility (`AXIsProcessTrusted`) granted; pasteboard save/restore; clipboard-only fallback
+- `Settings/` — SwiftUI settings + UserDefaults-backed preferences
+
+## Permissions (TCC)
+
+Only Microphone (prompted on first mic tap) and Accessibility (manual grant for insertion). No Speech Recognition or Input Monitoring permission needed. Reset during testing:
+
+```sh
+tccutil reset Microphone com.pwilliams.Transcriber
+tccutil reset Accessibility com.pwilliams.Transcriber
+```
