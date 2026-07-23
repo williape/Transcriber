@@ -32,6 +32,9 @@ final class TranscriptionEngine {
     /// Called on the main actor with the full committed text and current volatile remainder.
     var onTranscript: ((_ committed: String, _ volatile: String) -> Void)?
 
+    /// Called on the main actor with the mic input level (0...1) while recording.
+    var onLevel: ((Double) -> Void)?
+
     private let microphone = MicrophoneCapture()
     private var analyzer: SpeechAnalyzer?
     private var transcriber: SpeechTranscriber?
@@ -89,9 +92,13 @@ final class TranscriptionEngine {
         }
 
         try await analyzer.start(inputSequence: stream)
-        try microphone.start(targetFormat: format) { buffer in
+        try microphone.start(targetFormat: format, onLevel: { [weak self] level in
+            Task { @MainActor in
+                self?.onLevel?(level)
+            }
+        }, onBuffer: { buffer in
             continuation.yield(AnalyzerInput(buffer: buffer))
-        }
+        })
         logger.info("Session started (locale \(locale.identifier(.bcp47), privacy: .public))")
     }
 

@@ -46,6 +46,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         engine.onTranscript = { [weak self] committed, volatile in
             self?.appState.updateTranscript(committed: committed, volatile: volatile)
         }
+        engine.onLevel = { [weak self] level in
+            self?.appState.updateAudioLevel(level)
+        }
         statusItemController.onToggleDictation = { [weak self] in
             self?.toggleDictation()
         }
@@ -98,7 +101,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 let text = try await fileTranscriber.transcribe(
                     url: url,
-                    locale: .current,
+                    locale: Preferences.shared.selectedLocale,
                     modelDownloadProgress: { fraction in
                         Task { @MainActor in
                             appState.transition(to: .downloadingModel(progress: fraction))
@@ -162,12 +165,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             appState.clearTranscript()
             do {
                 let appState = self.appState!
-                try await engine.startSession(locale: .current) { fraction in
+                try await engine.startSession(locale: Preferences.shared.selectedLocale) { fraction in
                     Task { @MainActor in
                         appState.transition(to: .downloadingModel(progress: fraction))
                     }
                 }
                 appState.transition(to: .recording)
+                SoundPlayer.playStart()
             } catch {
                 appState.transition(to: .idle)
                 presentError(error)
@@ -177,6 +181,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func stopDictation() {
         appState.transition(to: .finishing)
+        appState.updateAudioLevel(0)
+        SoundPlayer.playStop()
         sessionTask = Task { @MainActor in
             defer { sessionTask = nil }
             do {
@@ -186,6 +192,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     appState.transition(to: .inserting)
                     let outcome = await outputRouter.deliver(text, mode: Preferences.shared.insertionMode)
                     logger.info("Delivery outcome: \(String(describing: outcome), privacy: .public)")
+                } else {
+                    // Hold the panel briefly so the user learns why nothing was inserted.
+                    appState.showNotice("No speech detected")
+                    try? await Task.sleep(for: .seconds(1.5))
                 }
             } catch {
                 presentError(error)
@@ -200,6 +210,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sessionTask = Task { @MainActor in
             defer { sessionTask = nil }
             await engine.cancelSession()
+            appState.updateAudioLevel(0)
             appState.clearTranscript()
             appState.transition(to: .idle)
         }

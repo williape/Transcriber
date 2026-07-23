@@ -139,8 +139,9 @@ Each phase ends buildable and manually verifiable. Claude Code can verify *compi
 - `FileTranscriber` using `analyzeSequence(from:)`; progress in menu/panel; result → window with text, Copy and Save (.txt) buttons. Handle long files (webinar-length) without blocking UI.
 - **Verify:** drop a 30+ min voice memo; transcription completes; output saves.
 
-### Phase 6 — Polish
+### Phase 6 — Polish — **🔨 implemented 2026-07-24, awaiting manual verification**
 - Live input level meter in panel (from mic tap RMS); recording start/stop sounds; locale picker (installed + downloadable locales); launch-at-login via `SMAppService`; menu bar icon animation while recording; robust error states (mic in use, model download failed, no speech detected via `SpeechDetector`).
+- Implementation notes: menu bar recording animation is a variable-color `waveform` symbol driven by the live mic level (file transcription icon became `waveform.circle` to stay distinct). "No speech detected" is derived from an empty final transcript (panel notice, 1.5 s hold) rather than a parallel `SpeechDetector` module — same user-facing result, one less module. Launch-at-login registers whatever binary path is running, i.e. the Debug build under `build/` until Phase 7 produces an installed copy.
 - **Verify:** exploratory pass through the full checklist in §7.
 
 ### Phase 7 — Distribution (optional)

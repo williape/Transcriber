@@ -29,6 +29,13 @@ final class AppState {
     private(set) var committedText = ""
     private(set) var volatileText = ""
 
+    /// Microphone input level, 0...1, updated ~10×/s while recording.
+    private(set) var audioLevel: Double = 0
+
+    /// Transient message shown in the panel instead of the transcript
+    /// (e.g. "No speech detected" before dismissal).
+    private(set) var notice: String?
+
     private let logger = Logger(subsystem: "com.pwilliams.Transcriber", category: "AppState")
 
     func transition(to newSession: Session) {
@@ -48,6 +55,15 @@ final class AppState {
     func clearTranscript() {
         committedText = ""
         volatileText = ""
+        notice = nil
+    }
+
+    func updateAudioLevel(_ level: Double) {
+        audioLevel = level
+    }
+
+    func showNotice(_ text: String) {
+        notice = text
     }
 
     private static func sameKind(_ a: Session, _ b: Session) -> Bool {

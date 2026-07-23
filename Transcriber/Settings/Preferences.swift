@@ -17,6 +17,8 @@ final class Preferences {
         static let hotkeyModifiers = "hotkeyModifiers"
         static let insertionMode = "insertionMode"
         static let accessibilityPromptShown = "accessibilityPromptShown"
+        static let playsSounds = "playsSounds"
+        static let localeIdentifier = "localeIdentifier"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -25,7 +27,24 @@ final class Preferences {
             Key.hotkeyKeyCode: Int(HotkeyManager.Shortcut.default.keyCode),
             Key.hotkeyModifiers: Int(HotkeyManager.Shortcut.default.carbonModifiers),
             Key.insertionMode: OutputRouter.InsertionMode.paste.rawValue,
+            Key.playsSounds: true,
         ])
+    }
+
+    var playsSounds: Bool {
+        get { defaults.bool(forKey: Key.playsSounds) }
+        set { defaults.set(newValue, forKey: Key.playsSounds) }
+    }
+
+    /// Transcription locale; empty identifier means "follow the system".
+    var selectedLocale: Locale {
+        get {
+            let identifier = defaults.string(forKey: Key.localeIdentifier) ?? ""
+            return identifier.isEmpty ? .current : Locale(identifier: identifier)
+        }
+        set {
+            defaults.set(newValue.identifier(.bcp47), forKey: Key.localeIdentifier)
+        }
     }
 
     var insertionMode: OutputRouter.InsertionMode {

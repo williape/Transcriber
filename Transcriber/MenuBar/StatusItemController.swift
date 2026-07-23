@@ -73,10 +73,12 @@ final class StatusItemController: NSObject {
         statusItem.menu = menu
     }
 
-    /// Re-arms Observation tracking each time the session state changes.
+    /// Re-arms Observation tracking each time the session state (or, while
+    /// recording, the mic level driving the icon animation) changes.
     private func observeState() {
         withObservationTracking {
             _ = appState.session
+            _ = appState.audioLevel
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -87,27 +89,24 @@ final class StatusItemController: NSObject {
     }
 
     private func refresh() {
-        let symbolName: String
-        let description: String
+        let image: NSImage?
         switch appState.session {
         case .idle:
-            symbolName = "mic"
-            description = "Transcriber idle"
+            image = NSImage(systemSymbolName: "mic", accessibilityDescription: "Transcriber idle")
         case .recording:
-            symbolName = "mic.fill"
-            description = "Transcriber recording"
+            // Variable-color waveform driven by the live mic level = the
+            // recording animation; a small floor keeps it visibly "on" in silence.
+            image = NSImage(systemSymbolName: "waveform",
+                            variableValue: max(appState.audioLevel, 0.1),
+                            accessibilityDescription: "Transcriber recording")
         case .finishing, .inserting:
-            symbolName = "mic.badge.xmark"
-            description = "Transcriber finishing"
+            image = NSImage(systemSymbolName: "mic.badge.xmark", accessibilityDescription: "Transcriber finishing")
         case .transcribingFile:
-            symbolName = "waveform"
-            description = "Transcriber transcribing file"
+            image = NSImage(systemSymbolName: "waveform.circle", accessibilityDescription: "Transcriber transcribing file")
         case .downloadingModel:
-            symbolName = "arrow.down.circle"
-            description = "Transcriber downloading model"
+            image = NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: "Transcriber downloading model")
         }
 
-        let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: description)
         image?.isTemplate = true
         statusItem.button?.image = image
 
