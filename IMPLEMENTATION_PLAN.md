@@ -134,7 +134,7 @@ Each phase ends buildable and manually verifiable. Claude Code can verify *compi
 - Setting: insertion mode (paste / clipboard-only).
 - **Verify:** dictate into TextEdit, Notes, Safari form field; text lands at the cursor; prior clipboard contents restored.
 
-### Phase 5 — File transcription — **implemented 2026-07-24, awaiting manual verify**
+### Phase 5 — File transcription — **✅ verified 2026-07-24**
 - Drag-and-drop onto the menu bar icon and an "Transcribe File…" open panel; accept common audio types (`.m4a`, `.mp3`, `.wav`, `.aac`, and video containers AVAudioFile can read).
 - `FileTranscriber` using `analyzeSequence(from:)`; progress in menu/panel; result → window with text, Copy and Save (.txt) buttons. Handle long files (webinar-length) without blocking UI.
 - **Verify:** drop a 30+ min voice memo; transcription completes; output saves.

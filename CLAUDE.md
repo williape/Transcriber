@@ -50,6 +50,15 @@ Use `os.Logger(subsystem: "com.pwilliams.Transcriber", ...)` everywhere.
 log stream --predicate 'subsystem == "com.pwilliams.Transcriber"' --level debug
 ```
 
+## Hard-won gotchas (from real debugging — don't rediscover these)
+
+- **Never launch the app via ⌘R in Xcode.** Xcode-run instances (a) stay attached to the debugger and survive SIGKILL until stopped in Xcode, (b) run from DerivedData with a different path, creating **duplicate TCC records** that made microphone access fail with instant denial and no Settings listing. Always build/launch via `xcodebuild` + `open build/...` as above. If mic permission misbehaves: `tccutil reset Microphone com.pwilliams.Transcriber` and check for stray instances (`pgrep -lx Transcriber`; `ps -o stat=` showing `X` = debugger-attached).
+- **Hardened Runtime must stay OFF** (`ENABLE_HARDENED_RUNTIME = NO`) until Phase 7. With it on and no `com.apple.security.device.audio-input` entitlement, mic access is silently denied — no prompt, no Settings entry. For Phase 7 notarization, re-enable it WITH that entitlement.
+- **`log` is shadowed by a zsh function in this user's shell** — always use `/usr/bin/log`, and remember `--level debug` or `.info`/`.debug` messages won't appear.
+- The user's terminal host is Apple Terminal; `open`-launched apps are their own TCC identity, so this is the safe launch path.
+- Esc-to-dismiss works via a transient Carbon hotkey registered only while the panel is visible (the non-activating panel can never receive key events). Esc is consumed globally during recording — intentional trade-off.
+- SDK API ground truth lives at `$(xcrun --show-sdk-path)/System/Library/Frameworks/Speech.framework/Modules/Speech.swiftmodule/arm64e-apple-macos.swiftinterface` — grep it rather than trusting blogs/memory for `SpeechAnalyzer` APIs.
+
 ## Rules
 
 - 100% native Apple frameworks. **NO third-party packages, ever.**
