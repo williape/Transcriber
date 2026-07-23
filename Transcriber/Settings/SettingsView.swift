@@ -10,6 +10,8 @@ import Speech
 import SwiftUI
 
 struct SettingsView: View {
+    let rebinder: ShortcutRebinder
+
     // Same UserDefaults keys Preferences uses.
     @AppStorage("insertionMode") private var insertionMode = OutputRouter.InsertionMode.paste.rawValue
     @AppStorage("playsSounds") private var playsSounds = true
@@ -29,8 +31,9 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            LabeledContent("Dictation shortcut",
-                           value: Preferences.shared.hotkeyShortcut.displayString)
+            LabeledContent("Dictation shortcut") {
+                ShortcutRecorderView(rebinder: rebinder)
+            }
 
             Picker("Language", selection: $localeIdentifier) {
                 Text("System (\(displayName(for: Locale.current)))").tag("")
@@ -125,5 +128,5 @@ struct SettingsView: View {
 }
 
 #Preview {
-    SettingsView()
+    SettingsView(rebinder: .noop)
 }

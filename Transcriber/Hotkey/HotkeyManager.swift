@@ -4,7 +4,7 @@
 //
 
 import AppKit
-import Carbon.HIToolbox
+import Carbon
 import os
 
 /// Global hotkeys via Carbon `RegisterEventHotKey`: needs no TCC permission and
@@ -30,17 +30,80 @@ final class HotkeyManager {
             return parts + Self.keyName(for: keyCode)
         }
 
+        /// Global shortcuts must include ⌘, ⌥, or ⌃ so ordinary typing can't
+        /// trigger them — except function keys, which are safe bare.
+        var isValidGlobalShortcut: Bool {
+            if Self.functionKeyCodes.contains(Int(keyCode)) { return true }
+            return carbonModifiers & UInt32(cmdKey | optionKey | controlKey) != 0
+        }
+
+        private static let functionKeyCodes: Set<Int> = [
+            kVK_F1, kVK_F2, kVK_F3, kVK_F4, kVK_F5, kVK_F6, kVK_F7, kVK_F8, kVK_F9, kVK_F10,
+            kVK_F11, kVK_F12, kVK_F13, kVK_F14, kVK_F15, kVK_F16, kVK_F17, kVK_F18, kVK_F19, kVK_F20,
+        ]
+
+        private static let namedKeys: [Int: String] = [
+            kVK_Space: "Space", kVK_Return: "Return", kVK_ANSI_KeypadEnter: "Enter",
+            kVK_Escape: "Esc", kVK_Tab: "Tab", kVK_Delete: "⌫", kVK_ForwardDelete: "⌦",
+            kVK_LeftArrow: "←", kVK_RightArrow: "→", kVK_UpArrow: "↑", kVK_DownArrow: "↓",
+            kVK_Home: "Home", kVK_End: "End", kVK_PageUp: "Page Up", kVK_PageDown: "Page Down",
+            kVK_Help: "Help",
+            kVK_F1: "F1", kVK_F2: "F2", kVK_F3: "F3", kVK_F4: "F4", kVK_F5: "F5",
+            kVK_F6: "F6", kVK_F7: "F7", kVK_F8: "F8", kVK_F9: "F9", kVK_F10: "F10",
+            kVK_F11: "F11", kVK_F12: "F12", kVK_F13: "F13", kVK_F14: "F14", kVK_F15: "F15",
+            kVK_F16: "F16", kVK_F17: "F17", kVK_F18: "F18", kVK_F19: "F19", kVK_F20: "F20",
+        ]
+
         private static func keyName(for keyCode: UInt32) -> String {
-            switch Int(keyCode) {
-            case kVK_Space: return "Space"
-            case kVK_Return: return "Return"
-            case kVK_Escape: return "Esc"
-            default: return "key \(keyCode)"
+            if let name = namedKeys[Int(keyCode)] { return name }
+            if let character = layoutCharacter(for: keyCode) { return character }
+            return "key \(keyCode)"
+        }
+
+        /// Character the key produces in the current keyboard layout (no modifiers).
+        private static func layoutCharacter(for keyCode: UInt32) -> String? {
+            guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
+                  let rawLayoutData = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else {
+                return nil
+            }
+            let layoutData = Unmanaged<CFData>.fromOpaque(rawLayoutData).takeUnretainedValue() as Data
+            return layoutData.withUnsafeBytes { buffer -> String? in
+                guard let layout = buffer.bindMemory(to: UCKeyboardLayout.self).baseAddress else {
+                    return nil
+                }
+                var deadKeyState: UInt32 = 0
+                var characters = [UniChar](repeating: 0, count: 4)
+                var length = 0
+                let status = UCKeyTranslate(layout,
+                                            UInt16(keyCode),
+                                            UInt16(kUCKeyActionDisplay),
+                                            0,
+                                            UInt32(LMGetKbdType()),
+                                            OptionBits(kUCKeyTranslateNoDeadKeysBit),
+                                            &deadKeyState,
+                                            characters.count,
+                                            &length,
+                                            &characters)
+                guard status == noErr, length > 0 else { return nil }
+                let string = String(utf16CodeUnits: characters, count: length)
+                guard !string.isEmpty, string.rangeOfCharacter(from: .controlCharacters) == nil else {
+                    return nil
+                }
+                return string.uppercased()
             }
         }
     }
 
     typealias HotkeyID = UInt32
+
+    static func carbonModifiers(from flags: NSEvent.ModifierFlags) -> UInt32 {
+        var modifiers: UInt32 = 0
+        if flags.contains(.control) { modifiers |= UInt32(controlKey) }
+        if flags.contains(.option) { modifiers |= UInt32(optionKey) }
+        if flags.contains(.shift) { modifiers |= UInt32(shiftKey) }
+        if flags.contains(.command) { modifiers |= UInt32(cmdKey) }
+        return modifiers
+    }
 
     private var handlers: [HotkeyID: @MainActor () -> Void] = [:]
     private var hotKeyRefs: [HotkeyID: EventHotKeyRef] = [:]

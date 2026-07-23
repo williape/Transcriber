@@ -33,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindowController: SettingsWindowController?
     private var transcriptWindows: [TranscriptWindowController] = []
     private var sessionTask: Task<Void, Never>?
+    private var mainHotkeyID: HotkeyManager.HotkeyID?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         appState = AppState()
@@ -66,13 +67,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let shortcut = Preferences.shared.hotkeyShortcut
-        if hotkeyManager.register(shortcut, handler: { [weak self] in
-            self?.toggleDictation()
-        }) == nil {
+        if !registerMainHotkey(shortcut) {
             presentHotkeyRegistrationFailure(for: shortcut)
         }
 
         logger.info("Launched; hotkey \(shortcut.displayString, privacy: .public)")
+    }
+
+    // MARK: - Main hotkey (re)registration
+
+    @discardableResult
+    private func registerMainHotkey(_ shortcut: HotkeyManager.Shortcut) -> Bool {
+        mainHotkeyID = hotkeyManager.register(shortcut) { [weak self] in
+            self?.toggleDictation()
+        }
+        return mainHotkeyID != nil
+    }
+
+    private func unregisterMainHotkey() {
+        if let mainHotkeyID {
+            hotkeyManager.unregister(mainHotkeyID)
+            self.mainHotkeyID = nil
+        }
+    }
+
+    /// Hooks handed to the Settings shortcut recorder. `begin` frees the
+    /// current hotkey so recording can capture it; `commit` swaps in the new
+    /// one (restoring the old on failure); `cancel` restores after abandonment.
+    private func makeShortcutRebinder() -> ShortcutRebinder {
+        ShortcutRebinder(
+            begin: { [weak self] in
+                self?.unregisterMainHotkey()
+            },
+            commit: { [weak self] shortcut in
+                guard let self else { return false }
+                if registerMainHotkey(shortcut) {
+                    Preferences.shared.hotkeyShortcut = shortcut
+                    logger.info("Hotkey changed to \(shortcut.displayString, privacy: .public)")
+                    return true
+                }
+                registerMainHotkey(Preferences.shared.hotkeyShortcut)
+                return false
+            },
+            cancel: { [weak self] in
+                guard let self, mainHotkeyID == nil else { return }
+                registerMainHotkey(Preferences.shared.hotkeyShortcut)
+            })
     }
 
     // MARK: - File transcription
@@ -222,7 +262,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func openSettings() {
         if settingsWindowController == nil {
-            settingsWindowController = SettingsWindowController()
+            settingsWindowController = SettingsWindowController(rebinder: makeShortcutRebinder())
         }
         settingsWindowController?.show()
     }
