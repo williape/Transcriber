@@ -123,13 +123,13 @@ Each phase ends buildable and manually verifiable. Claude Code can verify *compi
 - Non-activating `NSPanel` (decision 4) with `NSVisualEffectView` blur, hidden title bar, appears centered near bottom of active screen, all Spaces, Esc/hotkey dismisses. Placeholder text.
 - **Verify:** panel appears over a full-screen app; focus stays in the previously active text field (type — your keystrokes must land in the target app, not the panel).
 
-### Phase 3 — Live transcription — **implemented 2026-07-23, awaiting manual verify**
+### Phase 3 — Live transcription — **✅ verified 2026-07-24** (note: required turning OFF Hardened Runtime, which the Xcode template had enabled — a hardened app without the audio-input entitlement gets mic access silently denied with no prompt and no Settings listing. Re-enable WITH `com.apple.security.device.audio-input` for Phase 7 notarization.)
 - `ModelAssetManager`: check `SpeechTranscriber.installedLocales`; if missing, run `AssetInventory.assetInstallationRequest(supporting:)` with progress UI in the panel.
 - `MicrophoneCapture` (AVAudioEngine tap, converter) + `TranscriptionEngine` per the pipeline sketch; mic permission prompt on first use.
 - Panel renders committed text `.primary`, volatile `.secondary`, auto-scrolling.
 - **Verify:** speak; gray words solidify to black; stop via hotkey; final text shown. Test with Wi-Fi off (after model install) to prove offline.
 
-### Phase 4 — Output routing
+### Phase 4 — Output routing — **implemented 2026-07-24, awaiting manual verify**
 - `OutputRouter`: clipboard write always; direct insertion via CGEvent ⌘V when Accessibility granted; pasteboard save/restore; onboarding UI that deep-links to System Settings ▸ Privacy & Security ▸ Accessibility.
 - Setting: insertion mode (paste / clipboard-only).
 - **Verify:** dictate into TextEdit, Notes, Safari form field; text lands at the cursor; prior clipboard contents restored.

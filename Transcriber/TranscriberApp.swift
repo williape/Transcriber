@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotkeyManager: HotkeyManager!
     private var panelController: PanelController!
     private var engine: TranscriptionEngine!
+    private var outputRouter: OutputRouter!
     private var settingsWindowController: SettingsWindowController?
     private var sessionTask: Task<Void, Never>?
 
@@ -36,6 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeyManager = HotkeyManager()
         panelController = PanelController(appState: appState, hotkeyManager: hotkeyManager)
         engine = TranscriptionEngine()
+        outputRouter = OutputRouter()
 
         engine.onTranscript = { [weak self] committed, volatile in
             self?.appState.updateTranscript(committed: committed, volatile: volatile)
@@ -98,9 +100,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             defer { sessionTask = nil }
             do {
                 let text = try await engine.finishSession()
-                appState.updateTranscript(committed: text, volatile: "")
-                // Phase 3: show the final text briefly; Phase 4 inserts it instead.
-                try? await Task.sleep(for: .milliseconds(1500))
+                if !text.isEmpty {
+                    appState.updateTranscript(committed: text, volatile: "")
+                    appState.transition(to: .inserting)
+                    let outcome = await outputRouter.deliver(text, mode: Preferences.shared.insertionMode)
+                    logger.info("Delivery outcome: \(String(describing: outcome), privacy: .public)")
+                }
             } catch {
                 presentError(error)
             }

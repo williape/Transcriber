@@ -15,6 +15,8 @@ final class Preferences {
     private enum Key {
         static let hotkeyKeyCode = "hotkeyKeyCode"
         static let hotkeyModifiers = "hotkeyModifiers"
+        static let insertionMode = "insertionMode"
+        static let accessibilityPromptShown = "accessibilityPromptShown"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -22,7 +24,22 @@ final class Preferences {
         defaults.register(defaults: [
             Key.hotkeyKeyCode: Int(HotkeyManager.Shortcut.default.keyCode),
             Key.hotkeyModifiers: Int(HotkeyManager.Shortcut.default.carbonModifiers),
+            Key.insertionMode: OutputRouter.InsertionMode.paste.rawValue,
         ])
+    }
+
+    var insertionMode: OutputRouter.InsertionMode {
+        get {
+            OutputRouter.InsertionMode(rawValue: defaults.string(forKey: Key.insertionMode) ?? "") ?? .paste
+        }
+        set {
+            defaults.set(newValue.rawValue, forKey: Key.insertionMode)
+        }
+    }
+
+    var accessibilityPromptShown: Bool {
+        get { defaults.bool(forKey: Key.accessibilityPromptShown) }
+        set { defaults.set(newValue, forKey: Key.accessibilityPromptShown) }
     }
 
     var hotkeyShortcut: HotkeyManager.Shortcut {

@@ -126,7 +126,9 @@ final class TranscriptionEngine {
     }
 
     private func requestMicrophonePermission() async -> Bool {
-        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        let status = AVCaptureDevice.authorizationStatus(for: .audio)
+        logger.info("Mic authorization status: \(status.rawValue) (0=notDetermined 1=restricted 2=denied 3=authorized)")
+        switch status {
         case .authorized:
             return true
         case .notDetermined:
