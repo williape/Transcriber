@@ -114,7 +114,7 @@ try await analyzer.start(inputSequence: stream)
 
 Each phase ends buildable and manually verifiable. Claude Code can verify *compilation* itself (`xcodebuild`); runtime behavior (hotkeys, mic, permission prompts) needs you at the keyboard, so each phase lists a 1-minute manual check.
 
-### Phase 1 — Menu bar skeleton + hotkey (no speech yet)
+### Phase 1 — Menu bar skeleton + hotkey (no speech yet) — **implemented 2026-07-23, awaiting manual verify**
 - `NSStatusItem` with template mic icon; menu: Start Dictation, Transcribe File…, Settings…, Quit.
 - `HotkeyManager` with `RegisterEventHotKey` (⌥Space), toggling a logged state; `AppState` machine in place; Preferences storage.
 - **Verify:** icon appears, no Dock icon, ⌥Space toggles state (visible via icon change), app quits cleanly.
