@@ -129,12 +129,12 @@ Each phase ends buildable and manually verifiable. Claude Code can verify *compi
 - Panel renders committed text `.primary`, volatile `.secondary`, auto-scrolling.
 - **Verify:** speak; gray words solidify to black; stop via hotkey; final text shown. Test with Wi-Fi off (after model install) to prove offline.
 
-### Phase 4 — Output routing — **implemented 2026-07-24, awaiting manual verify**
+### Phase 4 — Output routing — **✅ verified 2026-07-24**
 - `OutputRouter`: clipboard write always; direct insertion via CGEvent ⌘V when Accessibility granted; pasteboard save/restore; onboarding UI that deep-links to System Settings ▸ Privacy & Security ▸ Accessibility.
 - Setting: insertion mode (paste / clipboard-only).
 - **Verify:** dictate into TextEdit, Notes, Safari form field; text lands at the cursor; prior clipboard contents restored.
 
-### Phase 5 — File transcription
+### Phase 5 — File transcription — **implemented 2026-07-24, awaiting manual verify**
 - Drag-and-drop onto the menu bar icon and an "Transcribe File…" open panel; accept common audio types (`.m4a`, `.mp3`, `.wav`, `.aac`, and video containers AVAudioFile can read).
 - `FileTranscriber` using `analyzeSequence(from:)`; progress in menu/panel; result → window with text, Copy and Save (.txt) buttons. Handle long files (webinar-length) without blocking UI.
 - **Verify:** drop a 30+ min voice memo; transcription completes; output saves.

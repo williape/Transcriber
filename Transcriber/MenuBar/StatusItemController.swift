@@ -5,6 +5,7 @@
 
 import AppKit
 import Observation
+import UniformTypeIdentifiers
 import os
 
 /// Owns the `NSStatusItem`, its menu, and the icon-per-state mapping.
@@ -12,6 +13,8 @@ import os
 final class StatusItemController: NSObject {
     var onToggleDictation: (() -> Void)?
     var onOpenSettings: (() -> Void)?
+    var onTranscribeFilePrompt: (() -> Void)?
+    var onFileDropped: ((URL) -> Void)?
 
     private let appState: AppState
     private let statusItem: NSStatusItem
@@ -25,8 +28,20 @@ final class StatusItemController: NSObject {
         super.init()
 
         buildMenu()
+        installDragTarget()
         observeState()
         refresh()
+    }
+
+    /// Overlay accepting audio/video file drops on the menu bar icon.
+    private func installDragTarget() {
+        guard let button = statusItem.button else { return }
+        let dragView = StatusItemDragView(frame: button.bounds)
+        dragView.autoresizingMask = [.width, .height]
+        dragView.onFileDropped = { [weak self] url in
+            self?.onFileDropped?(url)
+        }
+        button.addSubview(dragView)
     }
 
     private func buildMenu() {
@@ -36,8 +51,11 @@ final class StatusItemController: NSObject {
         dictationItem.action = #selector(toggleDictation)
         menu.addItem(dictationItem)
 
-        // No action yet — stays disabled until Phase 5.
-        menu.addItem(NSMenuItem(title: "Transcribe File…", action: nil, keyEquivalent: ""))
+        let transcribeItem = NSMenuItem(title: "Transcribe File…",
+                                        action: #selector(transcribeFilePrompt),
+                                        keyEquivalent: "")
+        transcribeItem.target = self
+        menu.addItem(transcribeItem)
 
         menu.addItem(.separator())
 
@@ -102,5 +120,51 @@ final class StatusItemController: NSObject {
 
     @objc private func openSettings() {
         onOpenSettings?()
+    }
+
+    @objc private func transcribeFilePrompt() {
+        onTranscribeFilePrompt?()
+    }
+}
+
+/// Transparent drag destination overlaying the status button; forwards clicks
+/// so the menu still opens.
+private final class StatusItemDragView: NSView {
+    var onFileDropped: ((URL) -> Void)?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        registerForDraggedTypes([.fileURL])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        (superview as? NSStatusBarButton)?.performClick(nil)
+    }
+
+    override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        acceptableFileURL(from: sender) != nil ? .copy : []
+    }
+
+    override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        guard let url = acceptableFileURL(from: sender) else { return false }
+        onFileDropped?(url)
+        return true
+    }
+
+    private func acceptableFileURL(from info: any NSDraggingInfo) -> URL? {
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+        guard let urls = info.draggingPasteboard.readObjects(forClasses: [NSURL.self],
+                                                             options: options) as? [URL],
+              let url = urls.first,
+              let type = UTType(filenameExtension: url.pathExtension),
+              type.conforms(to: .audiovisualContent) else {
+            return nil
+        }
+        return url
     }
 }

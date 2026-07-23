@@ -43,9 +43,9 @@ final class PanelController {
 
     private func sessionChanged() {
         switch appState.session {
-        case .recording, .finishing, .inserting, .downloadingModel:
+        case .recording, .finishing, .inserting, .downloadingModel, .transcribingFile:
             show()
-        case .idle, .transcribingFile:
+        case .idle:
             hide()
         }
     }

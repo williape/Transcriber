@@ -29,15 +29,17 @@ struct DictationView: View {
     private var content: some View {
         switch appState.session {
         case .downloadingModel(let progress):
-            downloadView(progress: progress)
+            progressView(label: "Downloading speech model…", progress: progress)
+        case .transcribingFile(let progress):
+            progressView(label: "Transcribing file…", progress: progress)
         default:
             transcriptView
         }
     }
 
-    private func downloadView(progress: Double) -> some View {
+    private func progressView(label: String, progress: Double) -> some View {
         VStack(spacing: 8) {
-            Text("Downloading speech model… \(Int(progress * 100))%")
+            Text("\(label) \(Int(progress * 100))%")
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
             ProgressView(value: progress)

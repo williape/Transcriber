@@ -4,6 +4,7 @@
 //
 
 import AppKit
+import UniformTypeIdentifiers
 import os
 
 @main
@@ -28,7 +29,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var panelController: PanelController!
     private var engine: TranscriptionEngine!
     private var outputRouter: OutputRouter!
+    private var fileTranscriber: FileTranscriber!
     private var settingsWindowController: SettingsWindowController?
+    private var transcriptWindows: [TranscriptWindowController] = []
     private var sessionTask: Task<Void, Never>?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -38,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panelController = PanelController(appState: appState, hotkeyManager: hotkeyManager)
         engine = TranscriptionEngine()
         outputRouter = OutputRouter()
+        fileTranscriber = FileTranscriber()
 
         engine.onTranscript = { [weak self] committed, volatile in
             self?.appState.updateTranscript(committed: committed, volatile: volatile)
@@ -47,6 +51,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         statusItemController.onOpenSettings = { [weak self] in
             self?.openSettings()
+        }
+        statusItemController.onTranscribeFilePrompt = { [weak self] in
+            self?.promptForFileToTranscribe()
+        }
+        statusItemController.onFileDropped = { [weak self] url in
+            self?.transcribeFile(url)
         }
         panelController.onEscape = { [weak self] in
             self?.cancelDictation()
@@ -60,6 +70,77 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         logger.info("Launched; hotkey \(shortcut.displayString, privacy: .public)")
+    }
+
+    // MARK: - File transcription
+
+    private func promptForFileToTranscribe() {
+        NSApp.activate(ignoringOtherApps: true)
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.audiovisualContent]
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose an audio or video file to transcribe"
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            self?.transcribeFile(url)
+        }
+    }
+
+    private func transcribeFile(_ url: URL) {
+        guard appState.session == .idle, sessionTask == nil else {
+            logger.info("File transcription request ignored while busy")
+            return
+        }
+        sessionTask = Task { @MainActor in
+            defer { sessionTask = nil }
+            let appState = self.appState!
+            appState.transition(to: .transcribingFile(progress: 0))
+            do {
+                let text = try await fileTranscriber.transcribe(
+                    url: url,
+                    locale: .current,
+                    modelDownloadProgress: { fraction in
+                        Task { @MainActor in
+                            appState.transition(to: .downloadingModel(progress: fraction))
+                        }
+                    },
+                    onProgress: { fraction in
+                        Task { @MainActor in
+                            appState.transition(to: .transcribingFile(progress: fraction))
+                        }
+                    })
+                appState.transition(to: .idle)
+                presentTranscript(text, for: url)
+            } catch {
+                appState.transition(to: .idle)
+                presentError(error)
+            }
+        }
+    }
+
+    private func presentTranscript(_ text: String, for url: URL) {
+        guard !text.isEmpty else {
+            NSApp.activate(ignoringOtherApps: true)
+            let alert = NSAlert()
+            alert.messageText = "No speech detected"
+            alert.informativeText = "Nothing to transcribe was found in \"\(url.lastPathComponent)\"."
+            alert.runModal()
+            return
+        }
+        let controller = TranscriptWindowController(text: text, sourceURL: url)
+        transcriptWindows.append(controller)
+        if let window = controller.window {
+            weak let weakSelf = self
+            weak let weakController = controller
+            NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification,
+                                                   object: window,
+                                                   queue: .main) { _ in
+                Task { @MainActor in
+                    weakSelf?.transcriptWindows.removeAll { $0 === weakController }
+                }
+            }
+        }
+        controller.show()
     }
 
     // MARK: - Dictation orchestration
