@@ -25,12 +25,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var appState: AppState!
     private var statusItemController: StatusItemController!
     private var hotkeyManager: HotkeyManager!
+    private var panelController: PanelController!
     private var settingsWindowController: SettingsWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         appState = AppState()
         statusItemController = StatusItemController(appState: appState)
         hotkeyManager = HotkeyManager()
+        panelController = PanelController(appState: appState, hotkeyManager: hotkeyManager)
 
         statusItemController.onToggleDictation = { [weak self] in
             self?.appState.toggleDictation()
@@ -39,12 +41,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.openSettings()
         }
 
-        hotkeyManager.onHotkey = { [weak self] in
-            self?.appState.toggleDictation()
-        }
-
         let shortcut = Preferences.shared.hotkeyShortcut
-        if !hotkeyManager.register(shortcut) {
+        if hotkeyManager.register(shortcut, handler: { [weak self] in
+            self?.appState.toggleDictation()
+        }) == nil {
             presentHotkeyRegistrationFailure(for: shortcut)
         }
 

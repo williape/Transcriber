@@ -7,8 +7,11 @@ import AppKit
 import Carbon.HIToolbox
 import os
 
-/// Global hotkey via Carbon `RegisterEventHotKey`: needs no TCC permission and
+/// Global hotkeys via Carbon `RegisterEventHotKey`: needs no TCC permission and
 /// consumes the keystroke, unlike `NSEvent.addGlobalMonitorForEvents`.
+/// Supports multiple concurrent registrations (main shortcut, transient Esc).
+/// App-lifetime object; registrations are released explicitly, not in deinit.
+@MainActor
 final class HotkeyManager {
     struct Shortcut: Equatable {
         var keyCode: UInt32
@@ -16,6 +19,7 @@ final class HotkeyManager {
 
         static let `default` = Shortcut(keyCode: UInt32(kVK_Space),
                                         carbonModifiers: UInt32(optionKey))
+        static let escape = Shortcut(keyCode: UInt32(kVK_Escape), carbonModifiers: 0)
 
         var displayString: String {
             var parts = ""
@@ -36,10 +40,11 @@ final class HotkeyManager {
         }
     }
 
-    /// Invoked on the main queue when the hotkey fires.
-    var onHotkey: (() -> Void)?
+    typealias HotkeyID = UInt32
 
-    private var hotKeyRef: EventHotKeyRef?
+    private var handlers: [HotkeyID: @MainActor () -> Void] = [:]
+    private var hotKeyRefs: [HotkeyID: EventHotKeyRef] = [:]
+    private var nextID: HotkeyID = 1
     private var eventHandlerRef: EventHandlerRef?
     private let logger = Logger(subsystem: "com.pwilliams.Transcriber", category: "Hotkey")
 
@@ -47,50 +52,62 @@ final class HotkeyManager {
         "TRSC".utf8.reduce(0) { ($0 << 8) | OSType($1) }
     }()
 
-    @discardableResult
-    func register(_ shortcut: Shortcut) -> Bool {
-        unregister()
+    /// Returns nil if registration fails (e.g. shortcut taken by another app).
+    func register(_ shortcut: Shortcut, handler: @escaping @MainActor () -> Void) -> HotkeyID? {
         installEventHandlerIfNeeded()
 
-        let hotKeyID = EventHotKeyID(signature: Self.signature, id: 1)
+        let id = nextID
+        nextID += 1
+        let hotKeyID = EventHotKeyID(signature: Self.signature, id: id)
+        var hotKeyRef: EventHotKeyRef?
         let status = RegisterEventHotKey(shortcut.keyCode,
                                          shortcut.carbonModifiers,
                                          hotKeyID,
                                          GetEventDispatcherTarget(),
                                          0,
                                          &hotKeyRef)
-        guard status == noErr, hotKeyRef != nil else {
+        guard status == noErr, let hotKeyRef else {
             logger.error("RegisterEventHotKey failed (status \(status)) for \(shortcut.displayString, privacy: .public)")
-            hotKeyRef = nil
-            return false
+            return nil
         }
-        logger.info("Registered hotkey \(shortcut.displayString, privacy: .public)")
-        return true
+        hotKeyRefs[id] = hotKeyRef
+        handlers[id] = handler
+        logger.info("Registered hotkey \(shortcut.displayString, privacy: .public) (id \(id))")
+        return id
     }
 
-    func unregister() {
-        if let hotKeyRef {
-            UnregisterEventHotKey(hotKeyRef)
-            self.hotKeyRef = nil
+    func unregister(_ id: HotkeyID) {
+        if let ref = hotKeyRefs.removeValue(forKey: id) {
+            UnregisterEventHotKey(ref)
         }
+        handlers.removeValue(forKey: id)
+    }
+
+    private func dispatch(_ id: HotkeyID) {
+        handlers[id]?()
     }
 
     private func installEventHandlerIfNeeded() {
         guard eventHandlerRef == nil else { return }
         var eventType = EventTypeSpec(eventClass: OSType(kEventClassKeyboard),
                                       eventKind: UInt32(kEventHotKeyPressed))
-        InstallEventHandler(GetEventDispatcherTarget(), { _, _, userData in
-            guard let userData else { return noErr }
+        InstallEventHandler(GetEventDispatcherTarget(), { _, event, userData in
+            guard let userData, let event else { return noErr }
+            var hotKeyID = EventHotKeyID()
+            GetEventParameter(event,
+                              EventParamName(kEventParamDirectObject),
+                              EventParamType(typeEventHotKeyID),
+                              nil,
+                              MemoryLayout<EventHotKeyID>.size,
+                              nil,
+                              &hotKeyID)
+            guard hotKeyID.signature == HotkeyManager.signature else { return noErr }
             let manager = Unmanaged<HotkeyManager>.fromOpaque(userData).takeUnretainedValue()
-            DispatchQueue.main.async { manager.onHotkey?() }
+            let id = hotKeyID.id
+            Task { @MainActor in
+                manager.dispatch(id)
+            }
             return noErr
         }, 1, &eventType, Unmanaged.passUnretained(self).toOpaque(), &eventHandlerRef)
-    }
-
-    deinit {
-        unregister()
-        if let eventHandlerRef {
-            RemoveEventHandler(eventHandlerRef)
-        }
     }
 }

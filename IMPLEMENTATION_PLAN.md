@@ -114,12 +114,12 @@ try await analyzer.start(inputSequence: stream)
 
 Each phase ends buildable and manually verifiable. Claude Code can verify *compilation* itself (`xcodebuild`); runtime behavior (hotkeys, mic, permission prompts) needs you at the keyboard, so each phase lists a 1-minute manual check.
 
-### Phase 1 — Menu bar skeleton + hotkey (no speech yet) — **implemented 2026-07-23, awaiting manual verify**
+### Phase 1 — Menu bar skeleton + hotkey (no speech yet) — **✅ verified 2026-07-23**
 - `NSStatusItem` with template mic icon; menu: Start Dictation, Transcribe File…, Settings…, Quit.
 - `HotkeyManager` with `RegisterEventHotKey` (⌥Space), toggling a logged state; `AppState` machine in place; Preferences storage.
 - **Verify:** icon appears, no Dock icon, ⌥Space toggles state (visible via icon change), app quits cleanly.
 
-### Phase 2 — Floating panel
+### Phase 2 — Floating panel — **implemented 2026-07-23, awaiting manual verify**
 - Non-activating `NSPanel` (decision 4) with `NSVisualEffectView` blur, hidden title bar, appears centered near bottom of active screen, all Spaces, Esc/hotkey dismisses. Placeholder text.
 - **Verify:** panel appears over a full-screen app; focus stays in the previously active text field (type — your keystrokes must land in the target app, not the panel).
 

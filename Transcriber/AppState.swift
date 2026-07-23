@@ -39,4 +39,11 @@ final class AppState {
             logger.info("Toggle ignored in state \(String(describing: self.session), privacy: .public)")
         }
     }
+
+    /// Esc: abandon the session without producing output.
+    func cancelDictation() {
+        guard session == .recording else { return }
+        session = .idle
+        logger.info("Session: recording → idle (cancelled)")
+    }
 }
