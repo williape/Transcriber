@@ -34,6 +34,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var transcriptWindows: [TranscriptWindowController] = []
     private var sessionTask: Task<Void, Never>?
     private var mainHotkeyID: HotkeyManager.HotkeyID?
+    /// Bumped for every dictation/file operation so progress ticks that arrive
+    /// late (see `progressSink`) can tell they belong to a finished operation.
+    private var operationGeneration = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         appState = AppState()
@@ -115,6 +118,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             })
     }
 
+    // MARK: - Progress plumbing
+
+    private enum ProgressKind {
+        case modelDownload
+        case fileTranscription
+    }
+
+    /// Progress callbacks fire from the download poller and the file results
+    /// loop, and reach the main actor through an unstructured task — so a tick
+    /// can land *after* the operation already transitioned to `.recording` or
+    /// `.idle` and strand the UI in a stale progress state. Stamping each tick
+    /// with the generation it was created for makes late ones no-ops.
+    private func progressSink(_ kind: ProgressKind, generation: Int) -> @Sendable (Double) -> Void {
+        { [weak self] fraction in
+            guard let self else { return }
+            Task { @MainActor in
+                guard self.operationGeneration == generation else { return }
+                switch kind {
+                case .modelDownload:
+                    self.appState.transition(to: .downloadingModel(progress: fraction))
+                case .fileTranscription:
+                    self.appState.transition(to: .transcribingFile(progress: fraction))
+                }
+            }
+        }
+    }
+
     // MARK: - File transcription
 
     private func promptForFileToTranscribe() {
@@ -134,27 +164,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             logger.info("File transcription request ignored while busy")
             return
         }
+        operationGeneration += 1
+        let generation = operationGeneration
         sessionTask = Task { @MainActor in
             defer { sessionTask = nil }
-            let appState = self.appState!
             appState.transition(to: .transcribingFile(progress: 0))
             do {
                 let text = try await fileTranscriber.transcribe(
                     url: url,
                     locale: Preferences.shared.selectedLocale,
-                    modelDownloadProgress: { fraction in
-                        Task { @MainActor in
-                            appState.transition(to: .downloadingModel(progress: fraction))
-                        }
-                    },
-                    onProgress: { fraction in
-                        Task { @MainActor in
-                            appState.transition(to: .transcribingFile(progress: fraction))
-                        }
-                    })
+                    modelDownloadProgress: progressSink(.modelDownload, generation: generation),
+                    onProgress: progressSink(.fileTranscription, generation: generation))
+                operationGeneration += 1
                 appState.transition(to: .idle)
                 presentTranscript(text, for: url)
             } catch {
+                operationGeneration += 1
                 appState.transition(to: .idle)
                 presentError(error)
             }
@@ -189,8 +214,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Dictation orchestration
 
     private func toggleDictation() {
+        // `sessionTask != nil` means an async start/stop/cancel is still in
+        // flight; the session state alone can't be trusted to gate re-entry.
+        guard sessionTask == nil else { return }
         switch appState.session {
-        case .idle where sessionTask == nil:
+        case .idle:
             startDictation()
         case .recording:
             stopDictation()
@@ -200,19 +228,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func startDictation() {
+        operationGeneration += 1
+        let generation = operationGeneration
         sessionTask = Task { @MainActor in
             defer { sessionTask = nil }
             appState.clearTranscript()
             do {
-                let appState = self.appState!
-                try await engine.startSession(locale: Preferences.shared.selectedLocale) { fraction in
-                    Task { @MainActor in
-                        appState.transition(to: .downloadingModel(progress: fraction))
-                    }
-                }
+                try await engine.startSession(
+                    locale: Preferences.shared.selectedLocale,
+                    modelDownloadProgress: progressSink(.modelDownload, generation: generation))
+                operationGeneration += 1
                 appState.transition(to: .recording)
                 SoundPlayer.playStart()
             } catch {
+                operationGeneration += 1
                 appState.transition(to: .idle)
                 presentError(error)
             }
@@ -220,6 +249,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func stopDictation() {
+        guard appState.session == .recording, sessionTask == nil else { return }
+        // Leave `.recording` synchronously so a second hotkey press can't
+        // start an overlapping finish.
         appState.transition(to: .finishing)
         appState.updateAudioLevel(0)
         SoundPlayer.playStop()
@@ -227,16 +259,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             defer { sessionTask = nil }
             do {
                 let text = try await engine.finishSession()
-                if !text.isEmpty {
-                    appState.updateTranscript(committed: text, volatile: "")
-                    appState.transition(to: .inserting)
-                    let outcome = await outputRouter.deliver(text, mode: Preferences.shared.insertionMode)
-                    logger.info("Delivery outcome: \(String(describing: outcome), privacy: .public)")
-                } else {
-                    // Hold the panel briefly so the user learns why nothing was inserted.
-                    appState.showNotice("No speech detected")
-                    try? await Task.sleep(for: .seconds(1.5))
-                }
+                await deliver(text)
+            } catch TranscriptionEngine.EngineError.transcriptionIncomplete(let partial, let underlying)
+                        where !partial.isEmpty {
+                // The stream died mid-session but the words we did get are
+                // still the user's — insert them rather than throwing them away.
+                logger.error("Transcript truncated: \(underlying.localizedDescription, privacy: .public)")
+                await deliver(partial)
             } catch {
                 presentError(error)
             }
@@ -245,12 +274,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func deliver(_ text: String) async {
+        guard !text.isEmpty else {
+            // Hold the panel briefly so the user learns why nothing was inserted.
+            appState.showNotice("No speech detected")
+            try? await Task.sleep(for: .seconds(1.5))
+            return
+        }
+        appState.updateTranscript(committed: text, volatile: "")
+        appState.transition(to: .inserting)
+        let outcome = await outputRouter.deliver(text, mode: Preferences.shared.insertionMode)
+        logger.info("Delivery outcome: \(String(describing: outcome), privacy: .public)")
+    }
+
     private func cancelDictation() {
-        guard appState.session == .recording else { return }
+        guard appState.session == .recording, sessionTask == nil else { return }
+        // Same reasoning as `stopDictation`: the state has to move off
+        // `.recording` before the first `await`, or repeated Escape presses
+        // each spawn their own cancellation and stop the microphone twice.
+        appState.transition(to: .finishing)
+        appState.updateAudioLevel(0)
         sessionTask = Task { @MainActor in
             defer { sessionTask = nil }
             await engine.cancelSession()
-            appState.updateAudioLevel(0)
+            operationGeneration += 1
             appState.clearTranscript()
             appState.transition(to: .idle)
         }

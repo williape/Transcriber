@@ -16,6 +16,10 @@ final class TranscriptionEngine {
         case microphonePermissionDenied
         case localeNotSupported(Locale)
         case noCompatibleAudioFormat
+        case sessionAlreadyRunning
+        /// The results stream failed part-way through; `partial` is what was
+        /// committed before it died, so the caller can still use it.
+        case transcriptionIncomplete(partial: String, underlying: any Error)
 
         var errorDescription: String? {
             switch self {
@@ -25,6 +29,10 @@ final class TranscriptionEngine {
                 return "Transcription isn't supported for \(locale.identifier)."
             case .noCompatibleAudioFormat:
                 return "No compatible audio format is available for transcription."
+            case .sessionAlreadyRunning:
+                return "A dictation session is already in progress."
+            case .transcriptionIncomplete(_, let underlying):
+                return "Transcription stopped early. (\(underlying.localizedDescription))"
             }
         }
     }
@@ -41,11 +49,17 @@ final class TranscriptionEngine {
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
     private var resultsTask: Task<Void, Never>?
     private var committed = ""
+    /// Set when `transcriber.results` dies mid-session, so `finishSession()`
+    /// can report a truncated transcript instead of passing it off as complete.
+    private var streamError: (any Error)?
     private let logger = Logger(subsystem: "com.pwilliams.Transcriber", category: "Engine")
 
     /// Prepares (permission, model) and starts the streaming session.
     func startSession(locale requestedLocale: Locale,
                       modelDownloadProgress: @escaping @Sendable (Double) -> Void) async throws {
+        guard analyzer == nil, resultsTask == nil else {
+            throw EngineError.sessionAlreadyRunning
+        }
         guard await requestMicrophonePermission() else {
             throw EngineError.microphonePermissionDenied
         }
@@ -57,7 +71,6 @@ final class TranscriptionEngine {
                                             transcriptionOptions: [],
                                             reportingOptions: [.volatileResults],
                                             attributeOptions: [])
-        self.transcriber = transcriber
 
         try await ModelAssetManager.ensureModel(for: transcriber,
                                                 locale: locale,
@@ -68,8 +81,10 @@ final class TranscriptionEngine {
         }
 
         let analyzer = SpeechAnalyzer(modules: [transcriber])
+        self.transcriber = transcriber
         self.analyzer = analyzer
         committed = ""
+        streamError = nil
 
         let (stream, continuation) = AsyncStream.makeStream(of: AnalyzerInput.self)
         inputContinuation = continuation
@@ -88,41 +103,76 @@ final class TranscriptionEngine {
                 }
             } catch {
                 self?.logger.error("Results stream ended with error: \(error, privacy: .public)")
+                self?.streamError = error
             }
         }
 
-        try await analyzer.start(inputSequence: stream)
-        try microphone.start(targetFormat: format, onLevel: { [weak self] level in
-            Task { @MainActor in
-                self?.onLevel?(level)
-            }
-        }, onBuffer: { buffer in
-            continuation.yield(AnalyzerInput(buffer: buffer))
-        })
+        // Everything above is now owned by `self`, so any failure from here on
+        // has to unwind the whole session — otherwise the analyzer, the input
+        // continuation and the results task outlive the failed start and the
+        // next session leaks them.
+        do {
+            try await analyzer.start(inputSequence: stream)
+            try microphone.start(targetFormat: format, onLevel: { [weak self] level in
+                guard let self else { return }
+                Task { @MainActor in
+                    self.onLevel?(level)
+                }
+            }, onBuffer: { buffer in
+                continuation.yield(AnalyzerInput(buffer: buffer))
+            })
+        } catch {
+            await cancelSession()
+            throw error
+        }
         logger.info("Session started (locale \(locale.identifier(.bcp47), privacy: .public))")
     }
 
     /// Stops capture, finalizes remaining audio, and returns the full transcript.
+    /// Throws `.transcriptionIncomplete` (carrying whatever was committed) when
+    /// the results stream failed part-way through.
     func finishSession() async throws -> String {
         microphone.stop()
         inputContinuation?.finish()
         inputContinuation = nil
-        try await analyzer?.finalizeAndFinishThroughEndOfInput()
-        await resultsTask?.value
+        // Hand ownership to locals before any `await`, so the engine is left in
+        // a clean, reusable state no matter which of these throws.
+        let analyzer = self.analyzer
+        let resultsTask = self.resultsTask
         tearDown()
+
+        do {
+            try await analyzer?.finalizeAndFinishThroughEndOfInput()
+        } catch {
+            await analyzer?.cancelAndFinishNow()
+            resultsTask?.cancel()
+            throw error
+        }
+        await resultsTask?.value
+
+        if let streamError {
+            self.streamError = nil
+            logger.error("Session finished with a truncated transcript (\(self.committed.count) characters)")
+            throw EngineError.transcriptionIncomplete(partial: committed, underlying: streamError)
+        }
         logger.info("Session finished (\(self.committed.count) characters)")
         return committed
     }
 
-    /// Abandons the session, discarding all results.
+    /// Abandons the session, discarding all results. Safe to call on a
+    /// half-started or already-finished session.
     func cancelSession() async {
         microphone.stop()
         inputContinuation?.finish()
         inputContinuation = nil
+        let analyzer = self.analyzer
+        let resultsTask = self.resultsTask
+        tearDown()
+
         await analyzer?.cancelAndFinishNow()
         resultsTask?.cancel()
-        tearDown()
         committed = ""
+        streamError = nil
         logger.info("Session cancelled")
     }
 

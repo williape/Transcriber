@@ -10,7 +10,8 @@ import os
 
 /// Shows/hides the floating panel in response to session state. Because the
 /// panel is never key, Esc can't arrive as a key event — instead a plain-Esc
-/// Carbon hotkey is registered only while the panel is visible.
+/// Carbon hotkey is registered only while a recording is live (see
+/// `updateEscapeRegistration`).
 @MainActor
 final class PanelController {
     private let appState: AppState
@@ -38,7 +39,7 @@ final class PanelController {
         }
     }
 
-    /// What to do when Esc is pressed while the panel is visible.
+    /// What to do when Esc is pressed while a recording is live.
     var onEscape: (() -> Void)?
 
     private func sessionChanged() {
@@ -47,6 +48,20 @@ final class PanelController {
             show()
         case .idle:
             hide()
+        }
+        updateEscapeRegistration()
+    }
+
+    /// Esc is a *global* Carbon hotkey: while registered, no other app sees the
+    /// key. So it's bound to the one state it acts on — cancelling a live
+    /// recording — rather than to panel visibility. The panel is also up during
+    /// file transcription and model downloads, where Esc does nothing; holding
+    /// it hostage for the length of a half-hour transcription would be hostile.
+    private func updateEscapeRegistration() {
+        if appState.session == .recording {
+            registerEscape()
+        } else {
+            unregisterEscape()
         }
     }
 
@@ -57,12 +72,10 @@ final class PanelController {
         // orderFrontRegardless, NOT makeKeyAndOrderFront — the panel must not
         // take focus from the user's target app.
         panel.orderFrontRegardless()
-        registerEscape()
         logger.info("Panel shown")
     }
 
     private func hide() {
-        unregisterEscape()
         guard let panel, panel.isVisible else { return }
         panel.orderOut(nil)
         logger.info("Panel hidden")

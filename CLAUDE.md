@@ -56,7 +56,7 @@ log stream --predicate 'subsystem == "com.pwilliams.Transcriber"' --level debug
 - **Hardened Runtime must stay OFF** (`ENABLE_HARDENED_RUNTIME = NO`) until Phase 7. With it on and no `com.apple.security.device.audio-input` entitlement, mic access is silently denied — no prompt, no Settings entry. For Phase 7 notarization, re-enable it WITH that entitlement.
 - **`log` is shadowed by a zsh function in this user's shell** — always use `/usr/bin/log`, and remember `--level debug` or `.info`/`.debug` messages won't appear.
 - The user's terminal host is Apple Terminal; `open`-launched apps are their own TCC identity, so this is the safe launch path.
-- Esc-to-dismiss works via a transient Carbon hotkey registered only while the panel is visible (the non-activating panel can never receive key events). Esc is consumed globally during recording — intentional trade-off.
+- Esc-to-dismiss works via a transient Carbon hotkey registered only while the session is `.recording` (the non-activating panel can never receive key events). Esc is consumed globally for that window — intentional trade-off. It is deliberately *not* registered for the other panel-visible states (`.downloadingModel`, `.transcribingFile`, `.finishing`, `.inserting`) where it has no action: swallowing Esc for the length of a long file transcription would break it for every other app.
 - SDK API ground truth lives at `$(xcrun --show-sdk-path)/System/Library/Frameworks/Speech.framework/Modules/Speech.swiftmodule/arm64e-apple-macos.swiftinterface` — grep it rather than trusting blogs/memory for `SpeechAnalyzer` APIs.
 
 ## Rules

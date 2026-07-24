@@ -66,12 +66,21 @@ final class OutputRouter {
 
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
+        let ownedChangeCount = pasteboard.changeCount
 
         // Let the pasteboard settle, paste, then give the target app time to
         // consume ⌘V before restoring the previous contents.
         try? await Task.sleep(for: .milliseconds(50))
         postCommandV()
         try? await Task.sleep(for: .milliseconds(400))
+
+        // Only restore if our transcript is still the clipboard's contents —
+        // if the user copied something during the delay, that's newer than the
+        // snapshot and must not be clobbered.
+        guard pasteboard.changeCount == ownedChangeCount else {
+            logger.info("Inserted \(text.count) characters via ⌘V; clipboard changed meanwhile, not restored")
+            return .inserted
+        }
         restore(saved, to: pasteboard)
 
         logger.info("Inserted \(text.count) characters via ⌘V; clipboard restored")
