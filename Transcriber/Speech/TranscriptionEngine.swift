@@ -4,9 +4,31 @@
 //
 
 import AVFoundation
+import CoreMedia
 import Foundation
 import Speech
 import os
+
+/// Everything a finished session produced. Returned instead of a bare `String`
+/// so the transcript, its timeline and the session metadata reach the history
+/// store together — including on the truncated path, where the partial result
+/// is just as worth keeping.
+nonisolated struct SessionResult: Sendable {
+    let text: String
+    let segments: [TranscriptSegment]
+    /// BCP-47 identifier of the locale actually used.
+    let localeIdentifier: String
+    let duration: TimeInterval
+    let isPartial: Bool
+
+    func markedPartial() -> SessionResult {
+        SessionResult(text: text,
+                      segments: segments,
+                      localeIdentifier: localeIdentifier,
+                      duration: duration,
+                      isPartial: true)
+    }
+}
 
 /// Owns one live dictation session: mic permission, model availability,
 /// SpeechAnalyzer + SpeechTranscriber, and the volatile/committed result split.
@@ -19,7 +41,7 @@ final class TranscriptionEngine {
         case sessionAlreadyRunning
         /// The results stream failed part-way through; `partial` is what was
         /// committed before it died, so the caller can still use it.
-        case transcriptionIncomplete(partial: String, underlying: any Error)
+        case transcriptionIncomplete(partial: SessionResult, underlying: any Error)
 
         var errorDescription: String? {
             switch self {
@@ -49,6 +71,11 @@ final class TranscriptionEngine {
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
     private var resultsTask: Task<Void, Never>?
     private var committed = ""
+    /// Committed spans with their place in the session's audio timeline.
+    private var segments: [TranscriptSegment] = []
+    /// Locale and start time of the running session, for the `SessionResult`.
+    private var sessionLocaleIdentifier = ""
+    private var sessionStartedAt: Date?
     /// Set when `transcriber.results` dies mid-session, so `finishSession()`
     /// can report a truncated transcript instead of passing it off as complete.
     private var streamError: (any Error)?
@@ -84,6 +111,9 @@ final class TranscriptionEngine {
         self.transcriber = transcriber
         self.analyzer = analyzer
         committed = ""
+        segments = []
+        sessionLocaleIdentifier = locale.identifier(.bcp47)
+        sessionStartedAt = nil
         streamError = nil
 
         let (stream, continuation) = AsyncStream.makeStream(of: AnalyzerInput.self)
@@ -96,6 +126,7 @@ final class TranscriptionEngine {
                     let text = String(result.text.characters)
                     if result.isFinal {
                         self.committed += text
+                        self.appendSegment(text: text, range: result.range)
                         self.onTranscript?(self.committed, "")
                     } else {
                         self.onTranscript?(self.committed, text)
@@ -113,6 +144,9 @@ final class TranscriptionEngine {
         // next session leaks them.
         do {
             try await analyzer.start(inputSequence: stream)
+            // Timed from when audio actually starts flowing, so a slow model
+            // download doesn't inflate the recorded duration.
+            sessionStartedAt = Date()
             try microphone.start(targetFormat: format, onLevel: { [weak self] level in
                 guard let self else { return }
                 Task { @MainActor in
@@ -131,8 +165,11 @@ final class TranscriptionEngine {
     /// Stops capture, finalizes remaining audio, and returns the full transcript.
     /// Throws `.transcriptionIncomplete` (carrying whatever was committed) when
     /// the results stream failed part-way through.
-    func finishSession() async throws -> String {
+    func finishSession() async throws -> SessionResult {
         microphone.stop()
+        // Capture the span now: the mic has just stopped, so this is the end of
+        // the audio, and the finalize/await below can take a while.
+        let duration = sessionStartedAt.map { -$0.timeIntervalSinceNow } ?? 0
         inputContinuation?.finish()
         inputContinuation = nil
         // Hand ownership to locals before any `await`, so the engine is left in
@@ -150,13 +187,32 @@ final class TranscriptionEngine {
         }
         await resultsTask?.value
 
+        let result = makeResult(duration: duration, isPartial: streamError != nil)
         if let streamError {
             self.streamError = nil
             logger.error("Session finished with a truncated transcript (\(self.committed.count) characters)")
-            throw EngineError.transcriptionIncomplete(partial: committed, underlying: streamError)
+            throw EngineError.transcriptionIncomplete(partial: result, underlying: streamError)
         }
-        logger.info("Session finished (\(self.committed.count) characters)")
-        return committed
+        logger.info("Session finished (\(self.committed.count) characters, \(Int(duration))s)")
+        return result
+    }
+
+    private func makeResult(duration: TimeInterval, isPartial: Bool) -> SessionResult {
+        SessionResult(text: committed,
+                      segments: segments,
+                      localeIdentifier: sessionLocaleIdentifier,
+                      duration: duration,
+                      isPartial: isPartial)
+    }
+
+    /// Records a committed span against the analyzer's timeline. Ranges can be
+    /// non-numeric (`CMTime.invalid`/`indefinite`) — those are dropped rather
+    /// than persisted as NaN seconds.
+    private func appendSegment(text: String, range: CMTimeRange) {
+        guard range.start.isNumeric, range.duration.isNumeric else { return }
+        segments.append(TranscriptSegment(start: range.start.seconds,
+                                          end: range.end.seconds,
+                                          text: text))
     }
 
     /// Abandons the session, discarding all results. Safe to call on a
@@ -172,6 +228,8 @@ final class TranscriptionEngine {
         await analyzer?.cancelAndFinishNow()
         resultsTask?.cancel()
         committed = ""
+        segments = []
+        sessionStartedAt = nil
         streamError = nil
         logger.info("Session cancelled")
     }

@@ -293,9 +293,10 @@ struct SessionResult {
 
 ### 8.5 Concurrency
 
-- `HistoryStore` is an `actor`-isolated wrapper around its own `ModelContext` (not the main-actor context) for writes, pruning, reconciliation, and export. The History window's `@Query` views use the main-actor context from the shared `ModelContainer`.
+- `HistoryStore` writes through the container's **main context**, not a background one. The target already builds with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, an entry is a few hundred bytes, and the write happens after delivery while the panel is already dismissing — so a background context would buy isolation friction and nothing measurable, and one shared context means M2's `@Query` views satisfy F3.9 for free. **Pruning and export (M4)** touch every row and do get their own `@ModelActor`.
 - `SessionAudioRecorder` is a `final class` with all mutable state confined to its serial queue; `append` is the only member callable from the render thread.
 - Nothing in the history path may be `await`ed on the dictation critical path (F1.4).
+- `HistoryStore` takes its `ModelConfiguration` and its `Preferences` by injection (defaulting to the real ones), so tests run against an in-memory store and their own `UserDefaults` suite rather than the user's history.
 
 ---
 

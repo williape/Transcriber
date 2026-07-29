@@ -1,0 +1,100 @@
+//
+//  HistoryStore.swift
+//  Transcriber
+//
+
+import Foundation
+import SwiftData
+import os
+
+/// Owns the SwiftData container for dictation history and is the only thing that
+/// writes to it.
+///
+/// Writes use the container's main context: an entry is a few hundred bytes, and
+/// recording happens *after* delivery, once the panel is already dismissing — so
+/// there's nothing to gain from a background context here, and sharing one
+/// context means M2's `@Query` views update live for free. Pruning and export
+/// (M4), which touch every row, get their own `@ModelActor` then.
+@MainActor
+final class HistoryStore {
+    let container: ModelContainer
+
+    private let preferences: Preferences
+    // Static so the convenience initializer can log before `self` exists.
+    private static let logger = Logger(subsystem: "com.pwilliams.Transcriber", category: "History")
+
+    /// `false` when the user has turned history off, or paused it for now.
+    var isRecordingEnabled: Bool {
+        preferences.keepsTranscriptHistory && !preferences.historyPaused
+    }
+
+    private static var storeURL: URL {
+        AppDirectories.support.appending(path: "History.store", directoryHint: .notDirectory)
+    }
+
+    /// The app's store, under Application Support.
+    convenience init() throws {
+        try AppDirectories.ensure(AppDirectories.support)
+        let url = Self.storeURL
+        do {
+            try self.init(configuration: ModelConfiguration(url: url))
+        } catch {
+            // An unreadable store must not cost the user their dictation tool:
+            // set it aside (so it can still be recovered by hand) and start
+            // fresh rather than failing every launch from here on.
+            Self.logger.error("History store unusable, starting fresh: \(error.localizedDescription, privacy: .public)")
+            try Self.setAside(url)
+            try self.init(configuration: ModelConfiguration(url: url))
+        }
+        Self.logger.info("History store ready at \(url.path, privacy: .public)")
+    }
+
+    /// Explicit configuration — lets tests run against an in-memory store and
+    /// their own defaults instead of the user's real ones.
+    init(configuration: ModelConfiguration, preferences: Preferences = .shared) throws {
+        self.preferences = preferences
+        container = try ModelContainer(for: Schema(versionedSchema: HistorySchemaV1.self),
+                                       migrationPlan: HistoryMigrationPlan.self,
+                                       configurations: configuration)
+    }
+
+    /// Moves the store and its SQLite sidecars out of the way.
+    private static func setAside(_ url: URL) throws {
+        let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
+        for suffix in ["", "-wal", "-shm"] {
+            let source = URL(filePath: url.path + suffix)
+            guard FileManager.default.fileExists(atPath: source.path) else { continue }
+            let destination = URL(filePath: url.path + ".corrupt-\(stamp)" + suffix)
+            try FileManager.default.moveItem(at: source, to: destination)
+        }
+    }
+
+    /// Archives a finished dictation. Silently does nothing when history is off
+    /// or paused. Never throws: losing a history entry is not worth interrupting
+    /// the user, and the transcript is already on its way to their app.
+    func record(_ draft: HistoryDraft) {
+        guard isRecordingEnabled else { return }
+        let context = container.mainContext
+        context.insert(HistoryEntry(draft: draft))
+        do {
+            try context.save()
+            // Never log transcript text — counts and durations only, matching the
+            // convention in the rest of the app.
+            Self.logger.info("Recorded entry (\(draft.text.count) characters, \(Int(draft.duration))s)")
+        } catch {
+            context.rollback()
+            Self.logger.error("Could not record history entry: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Total entries. Used for the launch log line and, later, the Settings
+    /// storage readout.
+    func entryCount() -> Int {
+        do {
+            return try container.mainContext.fetchCount(FetchDescriptor<HistoryEntry>())
+        } catch {
+            Self.logger.error("Could not count history entries: \(error.localizedDescription, privacy: .public)")
+            return 0
+        }
+    }
+}

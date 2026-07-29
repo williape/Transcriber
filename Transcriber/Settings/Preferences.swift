@@ -19,6 +19,7 @@ final class Preferences {
         static let accessibilityPromptShown = "accessibilityPromptShown"
         static let playsSounds = "playsSounds"
         static let localeIdentifier = "localeIdentifier"
+        static let keepsTranscriptHistory = "keepsTranscriptHistory"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -28,8 +29,19 @@ final class Preferences {
             Key.hotkeyModifiers: Int(HotkeyManager.Shortcut.default.carbonModifiers),
             Key.insertionMode: OutputRouter.InsertionMode.paste.rawValue,
             Key.playsSounds: true,
+            Key.keepsTranscriptHistory: true,
         ])
     }
+
+    /// Whether finished dictations are archived to the history store.
+    var keepsTranscriptHistory: Bool {
+        get { defaults.bool(forKey: Key.keepsTranscriptHistory) }
+        set { defaults.set(newValue, forKey: Key.keepsTranscriptHistory) }
+    }
+
+    /// Suppresses history for the current app run only — deliberately *not*
+    /// persisted, because a pause is for right now, not forever.
+    var historyPaused = false
 
     var playsSounds: Bool {
         get { defaults.bool(forKey: Key.playsSounds) }

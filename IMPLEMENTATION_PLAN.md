@@ -148,6 +148,19 @@ Each phase ends buildable and manually verifiable. Claude Code can verify *compi
 ### Phase 7 — Distribution (optional)
 - Developer ID signing + Hardened Runtime + notarization (`notarytool`), or stay with local Debug builds if it's personal-use only.
 
+### Phase 8 — Transcription history & audio retention — **in progress**
+
+Full spec: `PRD - Transcription History & Audio Retention.md` (approved 2026-07-30). Branch `feature/history-and-audio-retention`. Milestones M1–M5 are defined in that PRD's §14; status here.
+
+- **M1 — history store** — ✅ built, ⏳ awaiting manual check. `HistoryEntry` (SwiftData, versioned schema v1) + `HistoryStore` + `AppDirectories`; every completed dictation is archived with its transcript, timeline segments, locale, duration, target app and delivery outcome; Settings gains a History tab with the on/off toggle. Audio and pin fields are in the v1 schema but unused, so M3/M4 need no migration. `finishSession()` now returns a `SessionResult` instead of a `String`, and `transcriptionIncomplete` carries one too, so truncated sessions are archived rather than only inserted.
+- **M2 — History window** — not started.
+- **M3 — audio retention + playback** — not started.
+- **M4 — retention policy, pruning, pin UI, export** — not started.
+- **M5 — re-transcribe** — not started.
+
+**Verify (M1):** dictate 3×, quit, relaunch, and confirm the log reports the accumulated count:
+`/usr/bin/log stream --predicate 'subsystem == "com.pwilliams.Transcriber" and category == "History"' --info`
+
 ---
 
 ## 5. Permissions (TCC) matrix

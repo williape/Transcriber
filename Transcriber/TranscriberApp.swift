@@ -30,10 +30,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var engine: TranscriptionEngine!
     private var outputRouter: OutputRouter!
     private var fileTranscriber: FileTranscriber!
+    /// nil when the history store couldn't be opened at all — dictation still works.
+    private var historyStore: HistoryStore?
     private var settingsWindowController: SettingsWindowController?
     private var transcriptWindows: [TranscriptWindowController] = []
     private var sessionTask: Task<Void, Never>?
     private var mainHotkeyID: HotkeyManager.HotkeyID?
+    /// The app that was frontmost when recording started — which, because the
+    /// panel never activates, is still the insertion target when it ends.
+    private var sessionTargetApp: (bundleID: String?, name: String?)?
     /// Bumped for every dictation/file operation so progress ticks that arrive
     /// late (see `progressSink`) can tell they belong to a finished operation.
     private var operationGeneration = 0
@@ -46,6 +51,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         engine = TranscriptionEngine()
         outputRouter = OutputRouter()
         fileTranscriber = FileTranscriber()
+        openHistoryStore()
 
         engine.onTranscript = { [weak self] committed, volatile in
             self?.appState.updateTranscript(committed: committed, volatile: volatile)
@@ -75,6 +81,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         logger.info("Launched; hotkey \(shortcut.displayString, privacy: .public)")
+    }
+
+    // MARK: - History
+
+    private func openHistoryStore() {
+        do {
+            let store = try HistoryStore()
+            historyStore = store
+            logger.info("History: \(store.entryCount()) entries")
+        } catch {
+            // History is a convenience; dictation must not depend on it.
+            logger.error("History unavailable: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     // MARK: - Main hotkey (re)registration
@@ -230,6 +249,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func startDictation() {
         operationGeneration += 1
         let generation = operationGeneration
+        // Captured before the panel appears; NSWorkspace would report us once
+        // any of our own windows came up.
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        sessionTargetApp = (frontmost?.bundleIdentifier, frontmost?.localizedName)
         sessionTask = Task { @MainActor in
             defer { sessionTask = nil }
             appState.clearTranscript()
@@ -258,14 +281,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         sessionTask = Task { @MainActor in
             defer { sessionTask = nil }
             do {
-                let text = try await engine.finishSession()
-                await deliver(text)
+                let result = try await engine.finishSession()
+                await deliver(result)
             } catch TranscriptionEngine.EngineError.transcriptionIncomplete(let partial, let underlying)
-                        where !partial.isEmpty {
+                        where !partial.text.isEmpty {
                 // The stream died mid-session but the words we did get are
                 // still the user's — insert them rather than throwing them away.
                 logger.error("Transcript truncated: \(underlying.localizedDescription, privacy: .public)")
-                await deliver(partial)
+                await deliver(partial.markedPartial())
             } catch {
                 presentError(error)
             }
@@ -274,17 +297,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func deliver(_ text: String) async {
-        guard !text.isEmpty else {
+    private func deliver(_ result: SessionResult) async {
+        guard !result.text.isEmpty else {
             // Hold the panel briefly so the user learns why nothing was inserted.
+            // Nothing was said, so nothing is worth archiving either.
             appState.showNotice("No speech detected")
             try? await Task.sleep(for: .seconds(1.5))
             return
         }
-        appState.updateTranscript(committed: text, volatile: "")
+        appState.updateTranscript(committed: result.text, volatile: "")
         appState.transition(to: .inserting)
-        let outcome = await outputRouter.deliver(text, mode: Preferences.shared.insertionMode)
+        let outcome = await outputRouter.deliver(result.text, mode: Preferences.shared.insertionMode)
         logger.info("Delivery outcome: \(String(describing: outcome), privacy: .public)")
+        // After delivery, so the archived outcome is the real one.
+        recordHistory(result, outcome: outcome)
+    }
+
+    private func recordHistory(_ result: SessionResult, outcome: OutputRouter.Outcome?) {
+        guard let historyStore, historyStore.isRecordingEnabled else { return }
+        let draft = HistoryDraft(text: result.text,
+                                 localeIdentifier: result.localeIdentifier,
+                                 duration: result.duration,
+                                 isPartial: result.isPartial,
+                                 targetAppBundleID: sessionTargetApp?.bundleID,
+                                 targetAppName: sessionTargetApp?.name,
+                                 deliveryOutcomeRaw: outcome?.rawValue,
+                                 segments: result.segments)
+        historyStore.record(draft)
     }
 
     private func cancelDictation() {

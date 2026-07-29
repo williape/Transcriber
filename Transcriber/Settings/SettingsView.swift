@@ -16,6 +16,7 @@ struct SettingsView: View {
     @AppStorage("insertionMode") private var insertionMode = OutputRouter.InsertionMode.paste.rawValue
     @AppStorage("playsSounds") private var playsSounds = true
     @AppStorage("localeIdentifier") private var localeIdentifier = ""
+    @AppStorage("keepsTranscriptHistory") private var keepsTranscriptHistory = true
     @State private var accessibilityTrusted = AXIsProcessTrusted()
     @State private var localeOptions: [LocaleOption] = []
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
@@ -30,6 +31,16 @@ struct SettingsView: View {
     }
 
     var body: some View {
+        TabView {
+            general
+                .tabItem { Label("General", systemImage: "gearshape") }
+            history
+                .tabItem { Label("History", systemImage: "clock") }
+        }
+        .frame(width: 500)
+    }
+
+    private var general: some View {
         Form {
             LabeledContent("Dictation shortcut") {
                 ShortcutRecorderView(rebinder: rebinder)
@@ -83,7 +94,6 @@ struct SettingsView: View {
             }
         }
         .padding(20)
-        .frame(width: 460)
         .onReceive(trustRefresh) { _ in
             accessibilityTrusted = AXIsProcessTrusted()
         }
@@ -92,6 +102,42 @@ struct SettingsView: View {
         }
         .task {
             await loadLocales()
+        }
+    }
+
+    private var history: some View {
+        Form {
+            LabeledContent("Dictation history") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Toggle("Keep finished dictations", isOn: $keepsTranscriptHistory)
+                    Text("Transcripts are kept on this Mac only, unencrypted — FileVault is what protects them at rest. Audio is never recorded.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            LabeledContent("Stored in") {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("~/Library/Application Support/\(Bundle.main.bundleIdentifier ?? "Transcriber")")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                    Button("Reveal in Finder") {
+                        revealStorageFolder()
+                    }
+                }
+            }
+        }
+        .padding(20)
+    }
+
+    private func revealStorageFolder() {
+        do {
+            let url = try AppDirectories.ensure(AppDirectories.support)
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } catch {
+            NSWorkspace.shared.open(AppDirectories.support.deletingLastPathComponent())
         }
     }
 

@@ -17,7 +17,8 @@ final class OutputRouter {
         case clipboardOnly
     }
 
-    enum Outcome {
+    /// Raw values are persisted in history entries — don't rename them.
+    enum Outcome: String {
         case inserted
         case copiedToClipboard
     }
