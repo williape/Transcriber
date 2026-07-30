@@ -52,11 +52,13 @@ struct DictationView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func progressView(label: String, progress: Double) -> some View {
+    private func progressView(label: String, progress: Double?) -> some View {
         VStack(spacing: 8) {
-            Text("\(label) \(Int(progress * 100))%")
+            Text(progress.map { "\(label) \(Int($0 * 100))%" } ?? label)
                 .font(.system(size: 13))
                 .foregroundStyle(.secondary)
+            // A nil value makes this indeterminate, which is the honest thing to
+            // show before the first fraction arrives.
             ProgressView(value: progress)
         }
     }

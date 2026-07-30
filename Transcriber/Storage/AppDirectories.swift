@@ -65,25 +65,45 @@ nonisolated enum AppDirectories {
         return url
     }
 
+    /// SQLite sidecars. A `-wal` holds committed transactions that aren't in the
+    /// store file yet, and an `-shm` describes the `-wal` — so a store separated
+    /// from either is not the database it was, which is why they migrate as one
+    /// unit rather than as three files that happen to share a prefix.
+    private static let sidecarSuffixes = ["-wal", "-shm"]
+
     /// Moves everything from `legacy` into `destination`, returning the names it
     /// moved. Existing files at the destination are never overwritten — if any
     /// remain behind, `legacy` is left in place rather than tidied away, so
     /// nothing is silently lost.
+    ///
+    /// Throws if a move fails, having first put that store family back where it
+    /// came from: a half-migrated database is worse than an unmigrated one, and
+    /// the caller can only retry next launch if `legacy` is still whole.
     @discardableResult
     static func migrate(from legacy: URL, to destination: URL) throws -> [String] {
         let manager = FileManager.default
         guard manager.fileExists(atPath: legacy.path) else { return [] }
+        let names = try manager.contentsOfDirectory(atPath: legacy.path)
         try ensure(destination)
 
         var moved: [String] = []
-        for name in try manager.contentsOfDirectory(atPath: legacy.path) {
-            let target = destination.appending(path: name)
-            guard !manager.fileExists(atPath: target.path) else {
-                logger.error("Not migrating \(name, privacy: .public): already present at the new location")
+        for family in families(in: names) {
+            if let present = family.first(where: {
+                manager.fileExists(atPath: destination.appending(path: $0).path)
+            }) {
+                logger.error("Not migrating \(present, privacy: .public): already present at the new location")
                 continue
             }
-            try manager.moveItem(at: legacy.appending(path: name), to: target)
-            moved.append(name)
+            do {
+                for name in family {
+                    try manager.moveItem(at: legacy.appending(path: name),
+                                         to: destination.appending(path: name))
+                    moved.append(name)
+                }
+            } catch {
+                rollBack(family, from: destination, to: legacy)
+                throw error
+            }
         }
 
         if (try? manager.contentsOfDirectory(atPath: legacy.path))?.isEmpty == true {
@@ -93,5 +113,42 @@ nonisolated enum AppDirectories {
             logger.info("Migrated \(moved.count) items to \(destination.path, privacy: .public)")
         }
         return moved
+    }
+
+    /// Groups a directory listing so each store travels with its own sidecars.
+    /// Every other name is a family of one.
+    private static func families(in names: [String]) -> [[String]] {
+        let all = Set(names)
+        var families: [[String]] = []
+        for name in names.sorted() {
+            // A `-wal` is only a sidecar when its store is here too; on its own
+            // it's just a file with an odd name, and moves like any other.
+            if let base = sidecarBase(of: name), all.contains(base) { continue }
+            families.append([name] + sidecarSuffixes.map { name + $0 }.filter(all.contains))
+        }
+        return families
+    }
+
+    private static func sidecarBase(of name: String) -> String? {
+        for suffix in sidecarSuffixes where name.hasSuffix(suffix) {
+            return String(name.dropLast(suffix.count))
+        }
+        return nil
+    }
+
+    /// Returns a partially-moved family to `legacy`. Only ever called for a
+    /// family this migration moved, so nothing pre-existing at `destination` can
+    /// be dragged back with it.
+    private static func rollBack(_ family: [String], from destination: URL, to legacy: URL) {
+        let manager = FileManager.default
+        for name in family {
+            let source = destination.appending(path: name)
+            guard manager.fileExists(atPath: source.path) else { continue }
+            do {
+                try manager.moveItem(at: source, to: legacy.appending(path: name))
+            } catch {
+                logger.error("Could not roll back \(name, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            }
+        }
     }
 }

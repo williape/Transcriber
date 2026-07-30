@@ -116,6 +116,40 @@ struct HistoryStoreTests {
         #expect(store.entryCount() == 1)
     }
 
+    // MARK: - Export
+
+    /// The export destination is the user's folder, not the app's storage —
+    /// exporting into a shared one must not tighten it to owner-only and lock
+    /// everyone else out.
+    @Test func exportLeavesTheChosenFoldersPermissionsAlone() throws {
+        let (store, _) = try makeStore()
+        store.record(draft())
+        let directory = URL.temporaryDirectory.appending(path: "ExportTests-\(UUID().uuidString)",
+                                                        directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory,
+                                                withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o755])
+
+        let exported = try store.export(to: directory)
+
+        #expect(exported == 1)
+        let mode = try FileManager.default.attributesOfItem(atPath: directory.path)[.posixPermissions] as? Int
+        #expect(mode == 0o755)
+        #expect(FileManager.default.fileExists(atPath: directory.appending(path: "history.json").path))
+    }
+
+    @Test func exportCreatesAMissingDestination() throws {
+        let (store, _) = try makeStore()
+        store.record(draft())
+        let directory = URL.temporaryDirectory.appending(path: "ExportTests-\(UUID().uuidString)",
+                                                        directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        #expect(try store.export(to: directory) == 1)
+        #expect(FileManager.default.fileExists(atPath: directory.appending(path: "history.json").path))
+    }
+
     /// A pause lasts for the app run only, so it must not be written to defaults.
     @Test func pauseIsNotPersisted() throws {
         let suite = "com.pwilliams.Transcriber.tests.\(UUID().uuidString)"

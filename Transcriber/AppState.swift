@@ -19,8 +19,11 @@ final class AppState {
         case recording
         case finishing
         case inserting
-        case transcribingFile(progress: Double)
-        case downloadingModel(progress: Double)
+        /// `progress` is nil until the first real fraction arrives — a
+        /// determinate bar pinned at zero reads as "stuck", so the UI shows an
+        /// indeterminate one until there's something true to draw.
+        case transcribingFile(progress: Double?)
+        case downloadingModel(progress: Double?)
     }
 
     private(set) var session: Session = .idle

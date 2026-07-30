@@ -262,6 +262,12 @@ struct HistoryDetailView: View {
         panel.nameFieldStringValue = filename
         panel.begin { response in
             guard response == .OK, let url = panel.url else { return }
+            // Saving a recording on top of itself — the default filename, into
+            // the Recordings folder — would delete the source and then fail to
+            // copy it, destroying the audio. It's already where it's being
+            // asked to go.
+            guard url.resolvingSymlinksInPath().standardizedFileURL
+                    != source.resolvingSymlinksInPath().standardizedFileURL else { return }
             do {
                 // The panel already asked about replacing an existing file.
                 try? FileManager.default.removeItem(at: url)

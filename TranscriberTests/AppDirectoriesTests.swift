@@ -113,6 +113,105 @@ struct AppDirectoriesTests {
         #expect(FileManager.default.fileExists(atPath: legacy.appending(path: "History.store").path))
     }
 
+    /// A `-wal` holds committed transactions the store file doesn't have yet, so
+    /// arriving without it is arriving as a different database.
+    @Test func migrationKeepsAStoreWithItsSidecars() throws {
+        let legacy = temporaryURL()
+        let destination = temporaryURL()
+        defer {
+            try? FileManager.default.removeItem(at: legacy)
+            try? FileManager.default.removeItem(at: destination)
+        }
+
+        try AppDirectories.ensure(legacy)
+        try write("store", to: legacy.appending(path: "History.store"))
+        try write("wal", to: legacy.appending(path: "History.store-wal"))
+        try write("shm", to: legacy.appending(path: "History.store-shm"))
+
+        let moved = try AppDirectories.migrate(from: legacy, to: destination)
+
+        #expect(Set(moved) == ["History.store", "History.store-wal", "History.store-shm"])
+        for name in moved {
+            #expect(FileManager.default.fileExists(atPath: destination.appending(path: name).path))
+        }
+    }
+
+    /// The whole point of grouping: a store that can't travel with its sidecars
+    /// stays put, so the next launch can try the move again on an intact set.
+    @Test func aFailedMoveRollsBackTheWholeStoreFamily() throws {
+        let legacy = temporaryURL()
+        let destination = temporaryURL()
+        let immovable = legacy.appending(path: "History.store-shm")
+        defer {
+            // Immutable files can't be deleted either.
+            try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: immovable.path)
+            try? FileManager.default.removeItem(at: legacy)
+            try? FileManager.default.removeItem(at: destination)
+        }
+
+        try AppDirectories.ensure(legacy)
+        try write("store", to: legacy.appending(path: "History.store"))
+        try write("wal", to: legacy.appending(path: "History.store-wal"))
+        try write("shm", to: immovable)
+        // `rename(2)` fails with EPERM on an immutable file — a real move failure
+        // part-way through the family, which is the case worth pinning down.
+        try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: immovable.path)
+
+        #expect(throws: (any Error).self) {
+            try AppDirectories.migrate(from: legacy, to: destination)
+        }
+
+        for name in ["History.store", "History.store-wal", "History.store-shm"] {
+            #expect(FileManager.default.fileExists(atPath: legacy.appending(path: name).path),
+                    "\(name) should have been rolled back to the old location")
+            #expect(FileManager.default.fileExists(atPath: destination.appending(path: name).path) == false,
+                    "\(name) should not be left at the new location")
+        }
+    }
+
+    /// Skipping a family that's already arrived mustn't stop everything else
+    /// migrating.
+    @Test func migrationSkipsAnAlreadyPresentFamilyAndCarriesOn() throws {
+        let legacy = temporaryURL()
+        let destination = temporaryURL()
+        defer {
+            try? FileManager.default.removeItem(at: legacy)
+            try? FileManager.default.removeItem(at: destination)
+        }
+
+        try AppDirectories.ensure(legacy)
+        try write("old", to: legacy.appending(path: "History.store"))
+        try write("old wal", to: legacy.appending(path: "History.store-wal"))
+        try AppDirectories.ensure(legacy.appending(path: "Recordings", directoryHint: .isDirectory))
+        try AppDirectories.ensure(destination)
+        try write("new", to: destination.appending(path: "History.store"))
+
+        let moved = try AppDirectories.migrate(from: legacy, to: destination)
+
+        #expect(moved == ["Recordings"])
+        // The sidecar belongs to the store that stayed behind, and must not be
+        // grafted onto the store already at the new location.
+        #expect(FileManager.default.fileExists(atPath: destination.appending(path: "History.store-wal").path) == false)
+        #expect(FileManager.default.fileExists(atPath: legacy.appending(path: "History.store-wal").path))
+    }
+
+    /// A `-wal` with no store beside it is just a file with an odd name.
+    @Test func anOrphanedSidecarMigratesOnItsOwn() throws {
+        let legacy = temporaryURL()
+        let destination = temporaryURL()
+        defer {
+            try? FileManager.default.removeItem(at: legacy)
+            try? FileManager.default.removeItem(at: destination)
+        }
+
+        try AppDirectories.ensure(legacy)
+        try write("stray", to: legacy.appending(path: "History.store-wal"))
+
+        let moved = try AppDirectories.migrate(from: legacy, to: destination)
+
+        #expect(moved == ["History.store-wal"])
+    }
+
     @Test func migrationIsANoOpWithoutAnOldFolder() throws {
         let destination = temporaryURL()
         defer { try? FileManager.default.removeItem(at: destination) }

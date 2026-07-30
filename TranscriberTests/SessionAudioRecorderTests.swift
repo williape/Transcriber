@@ -12,6 +12,16 @@ import Testing
 /// location), so each test cleans up the file it made.
 struct SessionAudioRecorderTests {
 
+    /// A second of its own for each recorder.
+    ///
+    /// Filenames come from the start date, and these tests run in parallel
+    /// against one shared folder — so with `Date()` a name freed by one test can
+    /// be re-reserved by the next in the same second, and the test that just
+    /// deleted it then sees its file "back". Distinct dates make that impossible.
+    private func distinctDate() -> Date {
+        Date(timeIntervalSince1970: Double(UInt32.random(in: 0..<UInt32.max)))
+    }
+
     /// The analyzer's format for speech: mono Float32 at 16 kHz.
     private func format() throws -> AVAudioFormat {
         try #require(AVAudioFormat(commonFormat: .pcmFormatFloat32,
@@ -33,7 +43,7 @@ struct SessionAudioRecorderTests {
 
     @Test func writesAPlayableFileOfRoughlyTheRightLength() async throws {
         let format = try format()
-        let recorder = try SessionAudioRecorder(format: format)
+        let recorder = try SessionAudioRecorder(format: format, startedAt: distinctDate())
         defer { RecordingsDirectory.delete(filename: recorder.filename) }
 
         // 10 × 4096 frames at 16 kHz ≈ 2.56 s.
@@ -56,7 +66,7 @@ struct SessionAudioRecorderTests {
     }
 
     @Test func filenameIsTimestampedNotAUUID() throws {
-        let recorder = try SessionAudioRecorder(format: try format())
+        let recorder = try SessionAudioRecorder(format: try format(), startedAt: distinctDate())
         defer { RecordingsDirectory.delete(filename: recorder.filename) }
 
         // "2026-07-30 10-45-12.m4a"
@@ -71,7 +81,7 @@ struct SessionAudioRecorderTests {
     /// A session with no audio shouldn't leave a stub file behind — and reports
     /// `.empty`, not `.failed`: a silent dictation isn't worth warning about.
     @Test func emptyRecordingIsDiscarded() async throws {
-        let recorder = try SessionAudioRecorder(format: try format())
+        let recorder = try SessionAudioRecorder(format: try format(), startedAt: distinctDate())
 
         let outcome = await recorder.finish()
 
@@ -85,7 +95,7 @@ struct SessionAudioRecorderTests {
     /// and reports failure — which is what surfaces the "couldn't save audio"
     /// warning rather than losing the recording silently.
     @Test func mismatchedBufferFormatFailsLoudly() async throws {
-        let recorder = try SessionAudioRecorder(format: try format())
+        let recorder = try SessionAudioRecorder(format: try format(), startedAt: distinctDate())
         let wrongFormat = try #require(AVAudioFormat(commonFormat: .pcmFormatFloat32,
                                                     sampleRate: 44_100,
                                                     channels: 2,
@@ -102,7 +112,7 @@ struct SessionAudioRecorderTests {
     /// Cancelled dictation: the file must go, not linger as an orphan.
     @Test func discardRemovesTheFile() async throws {
         let format = try format()
-        let recorder = try SessionAudioRecorder(format: format)
+        let recorder = try SessionAudioRecorder(format: format, startedAt: distinctDate())
         recorder.append(try buffer(format))
 
         await recorder.discard()
@@ -114,8 +124,10 @@ struct SessionAudioRecorderTests {
     /// Two recorders opened in the same second must not share a file.
     @Test func concurrentSessionsGetDistinctFiles() async throws {
         let format = try format()
-        let first = try SessionAudioRecorder(format: format, startedAt: Date())
-        let second = try SessionAudioRecorder(format: format, startedAt: Date())
+        // The same second on purpose — that's the collision being tested.
+        let when = distinctDate()
+        let first = try SessionAudioRecorder(format: format, startedAt: when)
+        let second = try SessionAudioRecorder(format: format, startedAt: when)
         defer {
             RecordingsDirectory.delete(filename: first.filename)
             RecordingsDirectory.delete(filename: second.filename)

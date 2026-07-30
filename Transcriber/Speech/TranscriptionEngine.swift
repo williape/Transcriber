@@ -211,6 +211,13 @@ final class TranscriptionEngine {
         } catch {
             await analyzer?.cancelAndFinishNow()
             resultsTask?.cancel()
+            // The recording was already finalized above, and this session now
+            // ends with no `SessionResult` — so no history entry will ever
+            // reference the file. Take it with us rather than leaving an orphan
+            // for the next launch's reconcile pass to find.
+            if case .recorded(let recorded) = outcome {
+                RecordingsDirectory.delete(filename: recorded.filename)
+            }
             throw error
         }
         await resultsTask?.value

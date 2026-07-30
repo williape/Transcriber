@@ -63,5 +63,7 @@ struct HistoryActions {
 /// a stalled transcription.
 struct TranscriptionProgress {
     let label: String
-    let fraction: Double
+    /// nil until the operation has reported a real fraction — see
+    /// `AppState.Session`.
+    let fraction: Double?
 }

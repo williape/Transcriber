@@ -28,8 +28,10 @@ final class HistoryStore {
         preferences.keepsTranscriptHistory && !preferences.historyPaused
     }
 
+    private static let storeName = "History.store"
+
     private static var storeURL: URL {
-        AppDirectories.root.appending(path: "History.store", directoryHint: .notDirectory)
+        AppDirectories.root.appending(path: storeName, directoryHint: .notDirectory)
     }
 
     /// The app's store, in `~/Documents/Transcriber`.
@@ -37,7 +39,7 @@ final class HistoryStore {
         try AppDirectories.ensure(AppDirectories.root)
         // One-time move for anyone who ran the build that kept history in
         // Application Support.
-        _ = try? AppDirectories.migrate(from: AppDirectories.legacyRoot, to: AppDirectories.root)
+        try Self.migrateLegacyRoot()
         if AppDirectories.rootIsCloudSynced {
             Self.logger.error("~/Documents is synced to iCloud Drive — transcripts and audio will leave this Mac")
         }
@@ -67,6 +69,29 @@ final class HistoryStore {
                                        configurations: configuration)
     }
 
+    /// Brings anything left in the old Application Support folder across.
+    ///
+    /// A failed move is only fatal when it's *the store* that's still back there:
+    /// opening a fresh one at the new location would hide the legacy history
+    /// behind an empty list, and — since the destination would then exist — stop
+    /// the move ever being retried. Anything else that wouldn't come (a stray
+    /// file, the Recordings folder) is logged and left for the next launch;
+    /// history still works today.
+    private static func migrateLegacyRoot() throws {
+        do {
+            try AppDirectories.migrate(from: AppDirectories.legacyRoot, to: AppDirectories.root)
+        } catch {
+            logger.error("Migration incomplete: \(error.localizedDescription, privacy: .public)")
+            let manager = FileManager.default
+            let legacyStore = AppDirectories.legacyRoot.appending(path: storeName,
+                                                                  directoryHint: .notDirectory)
+            if manager.fileExists(atPath: legacyStore.path),
+               !manager.fileExists(atPath: storeURL.path) {
+                throw error
+            }
+        }
+    }
+
     /// Moves the store and its SQLite sidecars out of the way.
     private static func setAside(_ url: URL) throws {
         let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
@@ -81,8 +106,13 @@ final class HistoryStore {
     /// Archives a finished dictation. Silently does nothing when history is off
     /// or paused. Never throws: losing a history entry is not worth interrupting
     /// the user, and the transcript is already on its way to their app.
-    func record(_ draft: HistoryDraft) {
-        guard isRecordingEnabled else { return }
+    ///
+    /// Returns whether the entry was persisted — the caller owns any audio the
+    /// draft referenced, and a rolled-back save leaves that file with nothing
+    /// pointing at it.
+    @discardableResult
+    func record(_ draft: HistoryDraft) -> Bool {
+        guard isRecordingEnabled else { return false }
         let context = container.mainContext
         context.insert(HistoryEntry(draft: draft))
         do {
@@ -90,9 +120,11 @@ final class HistoryStore {
             // Never log transcript text — counts and durations only, matching the
             // convention in the rest of the app.
             Self.logger.info("Recorded entry (\(draft.text.count) characters, \(Int(draft.duration))s)")
+            return true
         } catch {
             context.rollback()
             Self.logger.error("Could not record history entry: \(error.localizedDescription, privacy: .public)")
+            return false
         }
     }
 
@@ -134,26 +166,30 @@ final class HistoryStore {
     // MARK: - Deletion
 
     /// Deletes entries and any audio they own.
+    ///
+    /// Files go **after** the save, never before: a failed save rolls the entries
+    /// back, and an entry that still points at a recording has to still have one.
     func delete(_ doomed: [HistoryEntry]) {
         guard !doomed.isEmpty else { return }
         let context = container.mainContext
+        let filenames = doomed.compactMap(\.audioFilename)
         for entry in doomed {
-            if let filename = entry.audioFilename {
-                RecordingsDirectory.delete(filename: filename)
-            }
             context.delete(entry)
         }
-        save(context, describing: "delete \(doomed.count) entries")
+        guard save(context, describing: "delete \(doomed.count) entries") else { return }
+        for filename in filenames {
+            RecordingsDirectory.delete(filename: filename)
+        }
     }
 
     /// Drops an entry's recording but keeps its transcript.
     func deleteAudio(of entry: HistoryEntry, pruned: Bool = false) {
         guard let filename = entry.audioFilename else { return }
-        RecordingsDirectory.delete(filename: filename)
         entry.audioFilename = nil
         entry.audioByteCount = nil
         entry.audioPrunedAt = pruned ? Date() : nil
-        save(container.mainContext, describing: "delete audio")
+        guard save(container.mainContext, describing: "delete audio") else { return }
+        RecordingsDirectory.delete(filename: filename)
     }
 
     /// Everything: entries, and every file in the recordings folder — including
@@ -164,7 +200,9 @@ final class HistoryStore {
         for entry in all {
             context.delete(entry)
         }
-        save(context, describing: "delete all history")
+        // Same ordering rule as `delete`: if the rows survive a failed save, so
+        // must the recordings they name.
+        guard save(context, describing: "delete all history") else { return }
         RecordingsDirectory.deleteAllRecordings()
         Self.logger.info("Deleted all history (\(all.count) entries)")
     }
@@ -291,7 +329,12 @@ final class HistoryStore {
     @discardableResult
     func export(to directory: URL) throws -> Int {
         let entries = allEntries()
-        try AppDirectories.ensure(directory)
+        // Deliberately not `AppDirectories.ensure`: this is a folder the user
+        // picked, not storage the app owns, and tightening an existing one to
+        // 0700 would quietly revoke everyone else's access to a shared
+        // directory. `withIntermediateDirectories` leaves an existing directory
+        // exactly as it found it.
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
         for entry in entries {
             let stamp = RecordingsDirectory.timestamp(for: entry.createdAt)
@@ -337,12 +380,17 @@ final class HistoryStore {
 
     // MARK: - Saving
 
-    private func save(_ context: ModelContext, describing action: String) {
+    /// Returns whether the save stuck. Callers that also delete files on disk
+    /// must check it — a rollback restores rows that reference those files.
+    @discardableResult
+    private func save(_ context: ModelContext, describing action: String) -> Bool {
         do {
             try context.save()
+            return true
         } catch {
             context.rollback()
             Self.logger.error("Could not \(action, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return false
         }
     }
 }

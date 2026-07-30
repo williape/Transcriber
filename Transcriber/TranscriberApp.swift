@@ -209,7 +209,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         operationGeneration += 1
         let generation = operationGeneration
-        appState.transition(to: .transcribingFile(progress: 0))
+        appState.transition(to: .transcribingFile(progress: nil))
         defer {
             operationGeneration += 1
             appState.transition(to: .idle)
@@ -368,7 +368,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let generation = operationGeneration
         sessionTask = Task { @MainActor in
             defer { sessionTask = nil }
-            appState.transition(to: .transcribingFile(progress: 0))
+            appState.transition(to: .transcribingFile(progress: nil))
             do {
                 let text = try await fileTranscriber.transcribe(
                     url: url,
@@ -465,12 +465,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 let result = try await engine.finishSession()
                 await deliver(result)
-            } catch TranscriptionEngine.EngineError.transcriptionIncomplete(let partial, let underlying)
-                        where !partial.text.isEmpty {
-                // The stream died mid-session but the words we did get are
-                // still the user's — insert them rather than throwing them away.
+            } catch TranscriptionEngine.EngineError.transcriptionIncomplete(let partial, let underlying) {
                 logger.error("Transcript truncated: \(underlying.localizedDescription, privacy: .public)")
-                await deliver(partial.markedPartial())
+                if partial.text.isEmpty {
+                    // Nothing survived, so there's no entry to own the audio and
+                    // nothing to insert — report the failure instead.
+                    if let audio = partial.audio {
+                        engine.discardRecording(audio)
+                    }
+                    presentError(underlying)
+                } else {
+                    // The stream died mid-session but the words we did get are
+                    // still the user's — insert them rather than throwing them away.
+                    await deliver(partial.markedPartial())
+                }
             } catch {
                 presentError(error)
             }
@@ -484,6 +492,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Secure input means a password field is focused. Recording that is exactly
     /// the thing a dictation tool must not do, so it overrides the preference.
     private func shouldRetainAudio() -> Bool {
+        // No store means no entry will ever reference the file, so recording one
+        // would only leave an orphan behind.
+        guard historyStore != nil else { return false }
         let preferences = Preferences.shared
         guard preferences.keepsTranscriptHistory,
               preferences.keepsAudioRecordings,
@@ -538,7 +549,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func recordHistory(_ result: SessionResult, outcome: OutputRouter.Outcome?) {
-        guard let historyStore else { return }
+        guard let historyStore else {
+            // `shouldRetainAudio` already refuses without a store, so there
+            // shouldn't be audio here — but an unowned recording must never be
+            // left on disk.
+            if let audio = result.audio {
+                engine.discardRecording(audio)
+            }
+            return
+        }
         guard historyStore.isRecordingEnabled else {
             // History was switched off (or paused) mid-session — the recording
             // shouldn't outlive the entry that would have referenced it.
@@ -557,7 +576,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                  audioFilename: result.audio?.filename,
                                  audioByteCount: result.audio?.byteCount,
                                  segments: result.segments)
-        historyStore.record(draft)
+        guard historyStore.record(draft) else {
+            // The entry was rolled back, so nothing references the recording.
+            if let audio = result.audio {
+                engine.discardRecording(audio)
+            }
+            return
+        }
         // Keeping to the size cap is cheapest right after the thing that grew it.
         if result.audio != nil {
             historyStore.prune()

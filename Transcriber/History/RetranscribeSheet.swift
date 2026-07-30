@@ -51,19 +51,7 @@ struct RetranscribeSheet: View {
             }
 
             if isRunning {
-                // A short recording can finish before any progress arrives, and
-                // an unlabelled bar at zero reads as "stuck" — so fall back to a
-                // spinner until there's a real fraction to show.
-                if let progress = progress() {
-                    ProgressView(value: progress.fraction) {
-                        Text(progress.label)
-                            .font(.caption)
-                    }
-                    .progressViewStyle(.linear)
-                } else {
-                    ProgressView()
-                        .progressViewStyle(.linear)
-                }
+                running
             }
 
             if let errorMessage {
@@ -88,6 +76,18 @@ struct RetranscribeSheet: View {
         .task {
             await loadLocales()
         }
+    }
+
+    /// The running step, taken from `AppState`. A short recording can finish
+    /// before any fraction arrives, and a bar pinned at zero reads as "stuck", so
+    /// a nil fraction deliberately draws an indeterminate bar instead.
+    private var running: some View {
+        let step = progress()
+        return ProgressView(value: step?.fraction) {
+            Text(step?.label ?? "Transcribing…")
+                .font(.caption)
+        }
+        .progressViewStyle(.linear)
     }
 
     private func loadLocales() async {
