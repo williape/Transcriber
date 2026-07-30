@@ -111,14 +111,14 @@ struct SettingsView: View {
         }
     }
 
-    /// Opens the Application Support folder that holds the history store (and,
-    /// from M3, retained audio).
+    /// Opens `~/Documents/Transcriber`, which holds the history store and (from
+    /// M3) retained audio.
     private func revealStorageFolder() {
         do {
-            let url = try AppDirectories.ensure(AppDirectories.support)
+            let url = try AppDirectories.ensure(AppDirectories.root)
             NSWorkspace.shared.activateFileViewerSelecting([url])
         } catch {
-            NSWorkspace.shared.open(AppDirectories.support.deletingLastPathComponent())
+            NSWorkspace.shared.open(AppDirectories.root.deletingLastPathComponent())
         }
     }
 

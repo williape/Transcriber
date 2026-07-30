@@ -29,12 +29,18 @@ final class HistoryStore {
     }
 
     private static var storeURL: URL {
-        AppDirectories.support.appending(path: "History.store", directoryHint: .notDirectory)
+        AppDirectories.root.appending(path: "History.store", directoryHint: .notDirectory)
     }
 
-    /// The app's store, under Application Support.
+    /// The app's store, in `~/Documents/Transcriber`.
     convenience init() throws {
-        try AppDirectories.ensure(AppDirectories.support)
+        try AppDirectories.ensure(AppDirectories.root)
+        // One-time move for anyone who ran the build that kept history in
+        // Application Support.
+        _ = try? AppDirectories.migrate(from: AppDirectories.legacyRoot, to: AppDirectories.root)
+        if AppDirectories.rootIsCloudSynced {
+            Self.logger.error("~/Documents is synced to iCloud Drive — transcripts and audio will leave this Mac")
+        }
         let url = Self.storeURL
         do {
             try self.init(configuration: ModelConfiguration(url: url))

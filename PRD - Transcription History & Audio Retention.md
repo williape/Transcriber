@@ -57,7 +57,7 @@ What it does, and what we do differently.
 | Aspect | SuperWhisper | Transcriber (this PRD) |
 |---|---|---|
 | History list | Sidebar of previous dictations; right-click ▸ "Process Again" re-runs with the *currently active* mode | Same idea; re-transcribe uses the locale picked in the re-transcribe sheet, not implicitly the current setting |
-| Audio retention | Saved to disk **by default, no documented opt-out**; files live in `~/Documents` | **Off by default, explicit opt-in**; files live in `~/Library/Application Support/…` with `0700` perms |
+| Audio retention | Saved to disk **by default, no documented opt-out** | **Off by default, explicit opt-in.** Same neighbourhood on disk (`~/Documents/Transcriber`, `0700`) — the difference is consent, not concealment |
 | Retention policy | No documented auto-delete; pruning is manual | Age-based expiry + total-size cap, both enforced automatically |
 | Incognito | — | "Pause History" menu toggle; automatic skip while secure input is active |
 | Reprocessing | Yes (re-transcribe from stored audio) | Yes, same, but only for entries that still have audio |
@@ -171,7 +171,7 @@ Stated up front, in the style of `IMPLEMENTATION_PLAN.md` §1. Each is a judgmen
 App is **not** sandboxed (`ENABLE_APP_SANDBOX = NO`), so these are real paths, not container paths:
 
 ```
-~/Library/Application Support/com.pwilliams.Transcriber/     (mode 0700)
+~/Documents/Transcriber/          (mode 0700)
 ├── History.store                 // SwiftData (+ -wal, -shm)
 └── Recordings/
     ├── 7C4F…-A19B.m4a            // <entry UUID>.m4a
@@ -180,8 +180,9 @@ App is **not** sandboxed (`ENABLE_APP_SANDBOX = NO`), so these are real paths, n
 
 - Directory created lazily on first write, with `POSIXPermissions: 0o700`.
 - Filenames are entry UUIDs — no timestamp collisions, no transcript text leaking into filenames visible to any process that can list the directory.
-- Deliberately **not** `~/Documents` (SuperWhisper's choice): dictation audio is app data, and users shouldn't have to see it unless they ask. "Reveal in Finder" covers the discoverability gap.
-- `Recordings/` gets `.metadata_never_index` so Spotlight doesn't index the audio.
+- **`~/Documents/Transcriber` at the user's request** (2026-07-30), replacing the original `~/Library/Application Support/<bundle id>`. Their reasoning wins over the earlier draft's: this is *their* dictation, and they want to see, back up and prune it without an app mediating. `AppDirectories.migrate(from:to:)` moved the existing store on first launch of the new build and removes the old folder once empty; it never overwrites a file already at the destination.
+- **The trade this accepts:** `~/Documents` is more exposed than Application Support. If System Settings ▸ iCloud ▸ "Desktop & Documents Folders" is ever switched on, `~/Documents` is redirected into iCloud Drive and every transcript and recording leaves the Mac — which would quietly break the app's on-device promise. `AppDirectories.rootIsCloudSynced` detects the redirect and logs it; if audio retention (M3) lands while it's true, that deserves a visible warning in Settings, not just a log line. (Verified off for this user on 2026-07-30: `~/Documents` resolves to a local path.)
+- `Recordings/` gets `.metadata_never_index` so Spotlight doesn't index the audio — worth more here than it was under Application Support.
 
 ---
 
@@ -203,7 +204,7 @@ Transcriber/
 │   ├── SessionAudioRecorder.swift      // serial-queue AVAudioFile writer
 │   └── RecordingsDirectory.swift       // paths, permissions, sizing, sweeping
 └── Storage/
-    └── AppDirectories.swift            // Application Support paths, 0700 creation
+    └── AppDirectories.swift            // ~/Documents/Transcriber paths, 0700, legacy migration
 ```
 
 Folder-synchronized groups mean no `pbxproj` edits (CLAUDE.md rule).
@@ -342,7 +343,7 @@ History controls live on the **single existing Settings page**, not a second tab
 | Retention turned off with existing data | Existing entries are **kept**; the toggle governs new sessions. Deleting is an explicit action (F6.6) |
 | Audio retention turned off | Existing audio kept; offer "Delete existing recordings (N MB)?" in the confirmation |
 | Very long dictation (30+ min) | AAC writer streams; memory flat. Verify in Phase 8 manual check |
-| Two Macs, same Application Support via sync | Out of scope; document that history is per-machine |
+| Two Macs, one synced `~/Documents` | Out of scope, and now more reachable than it was: history is per-machine, and a synced Documents folder would have two apps writing one SQLite store. `rootIsCloudSynced` is the detection hook |
 
 ---
 
@@ -400,7 +401,7 @@ Each milestone ends buildable and manually verifiable, matching the plan's conve
 
 Housekeeping in the same phase: add Phase 8 to `IMPLEMENTATION_PLAN.md` (§4 and the §7 checklist), and add to `CLAUDE.md` the new architecture entries plus any gotchas found (expect at least one about AAC writing or SwiftData container setup).
 
-**Phase 7 interaction:** if distribution happens later, Hardened Runtime goes back on with `com.apple.security.device.audio-input`. Nothing here needs a new entitlement. But if the App Sandbox were ever enabled (currently ruled out by decision 3 in the plan), `Application Support` moves into a container and history would need a one-time migration — worth a note in the plan rather than a surprise.
+**Phase 7 interaction:** if distribution happens later, Hardened Runtime goes back on with `com.apple.security.device.audio-input`. Nothing here needs a new entitlement. But if the App Sandbox were ever enabled (currently ruled out by decision 3 in the plan), `~/Documents` becomes a container path and history would need a second migration — the `AppDirectories.migrate(from:to:)` used for the Application Support move is reusable for it.
 
 ---
 
@@ -425,7 +426,7 @@ Housekeeping in the same phase: add Phase 8 to `IMPLEMENTATION_PLAN.md` (§4 and
 | Uncompressed WAV | ~115 MB/hour at 16 kHz Float32; no benefit for speech review |
 | `AVAudioRecorder` | Would need its own input device session, conflicting with the `AVAudioEngine` tap |
 | Lock-free ring buffer between tap and writer | Strictly more correct on the render thread, but the existing `AsyncStream` yield already sets the bar; revisit only if dropouts appear |
-| Store audio in `~/Documents/Transcriber/` | Visible, yes — but it's app data, and default-visible sensitive audio is exactly the SuperWhisper criticism |
+| Keep everything in `~/Library/Application Support/<bundle id>` | Shipped that way in M1, then moved to `~/Documents/Transcriber` on the user's call (§7). Hiding a person's own dictation from them to make it feel safer wasn't the right trade; opt-in audio is what actually addresses the SuperWhisper criticism |
 | Global hotkey for "insert last transcript" | Another hotkey to conflict-manage; the menu covers it in v1 |
 | History inside the floating panel | The panel is non-activating by design and can't take key focus for search or selection (plan decision 4) |
 
