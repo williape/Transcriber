@@ -122,21 +122,12 @@ final class HistoryStore {
 
         // The store has arrived; a `-wal` left behind is a different problem.
         // It holds committed transactions the store file doesn't have yet, and
-        // this is the last moment they can be recovered: opening the database
-        // creates a *fresh* `-wal` at the new location, after which a later
-        // migration would skip the stranded one as "already present" and its
-        // transactions would be lost for good. So reunite it or refuse.
+        // there is exactly one moment they can be recovered — before the store is
+        // opened, which creates a *fresh* `-wal` at the new location, after which
+        // a later migration would skip the stranded one as "already present".
         let strayLog = legacy.appending(path: storeName + "-wal", directoryHint: .notDirectory)
         if manager.fileExists(atPath: strayLog.path) {
-            do {
-                try manager.moveItem(at: strayLog,
-                                     to: destination.appending(path: storeName + "-wal",
-                                                               directoryHint: .notDirectory))
-                logger.info("Recovered the write-ahead log left in the old folder")
-            } catch {
-                logger.error("Write-ahead log stranded in the old folder: \(error.localizedDescription, privacy: .public)")
-                throw MigrationError.logLeftBehind(legacy)
-            }
+            try recover(strayLog, alongside: destination)
         }
 
         // An `-shm` is only a shared-memory index over the `-wal` — derived
@@ -145,6 +136,43 @@ final class HistoryStore {
         if manager.fileExists(atPath: strayIndex.path) {
             logger.info("Discarding the stale shared-memory index left in the old folder")
             try? manager.removeItem(at: strayIndex)
+        }
+    }
+
+    /// Puts a stranded write-ahead log back beside the store it belongs to — but
+    /// only when that's a coherent thing to do.
+    ///
+    /// A `-wal` records changes *since its own database's last checkpoint*, so it
+    /// only means anything next to that database. Dropping one beside a store it
+    /// didn't come from, or where there's no store at all, is worse than leaving
+    /// it where it is.
+    private static func recover(_ log: URL, alongside destination: URL) throws {
+        let manager = FileManager.default
+        let store = destination.appending(path: storeName, directoryHint: .notDirectory)
+        guard manager.fileExists(atPath: store.path) else {
+            // No database arrived, so there's nothing this log can be applied to
+            // and nothing it can hide: a WAL alone holds no readable history.
+            // Left on disk rather than deleted, in case it's ever wanted.
+            logger.error("A write-ahead log remains in the old folder with no store to match it")
+            return
+        }
+        let destinationLog = destination.appending(path: storeName + "-wal", directoryHint: .notDirectory)
+        guard !manager.fileExists(atPath: destinationLog.path) else {
+            // The store here has been opened since it moved and has a log of its
+            // own; the old one predates that and can no longer be applied.
+            // Refusing forever would cost the user their working history for a
+            // file nothing can now read.
+            logger.error("A write-ahead log remains in the old folder; the store at the new location already has its own")
+            return
+        }
+        do {
+            try manager.moveItem(at: log, to: destinationLog)
+            logger.info("Recovered the write-ahead log left in the old folder")
+        } catch {
+            // Recoverable, but not right now: the store must not be opened,
+            // because that would replace the log we still need.
+            logger.error("Could not recover the write-ahead log: \(error.localizedDescription, privacy: .public)")
+            throw MigrationError.logLeftBehind(log.deletingLastPathComponent())
         }
     }
 

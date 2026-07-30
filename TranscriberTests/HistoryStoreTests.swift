@@ -181,6 +181,45 @@ struct HistoryStoreTests {
         }
     }
 
+    /// A `-wal` records changes since *its own* database's last checkpoint, so
+    /// with no store at the new location there's nothing it can be applied to —
+    /// dropping it next to a store that will be created fresh would be worse than
+    /// leaving it alone.
+    @Test func aWriteAheadLogIsLeftAloneWithNoStoreToMatchIt() throws {
+        let (legacy, destination) = try legacyAndDestination(withMigratedStore: false)
+        defer {
+            try? FileManager.default.removeItem(at: legacy)
+            try? FileManager.default.removeItem(at: destination)
+        }
+        try Data("wal".utf8).write(to: legacy.appending(path: "History.store-wal"))
+
+        try HistoryStore.verifyStoreMigrated(in: legacy, to: destination)
+
+        #expect(FileManager.default.fileExists(atPath: legacy.appending(path: "History.store-wal").path))
+        #expect(FileManager.default.fileExists(atPath: destination.appending(path: "History.store-wal").path) == false)
+    }
+
+    /// Once the migrated store has been opened it has a log of its own, and the
+    /// old one can no longer be applied to it. Refusing forever would cost the
+    /// user a working history for a file nothing can read.
+    @Test func anOutdatedWriteAheadLogDoesNotBlockLaunch() throws {
+        let (legacy, destination) = try legacyAndDestination()
+        defer {
+            try? FileManager.default.removeItem(at: legacy)
+            try? FileManager.default.removeItem(at: destination)
+        }
+        try Data("old wal".utf8).write(to: legacy.appending(path: "History.store-wal"))
+        try Data("current wal".utf8).write(to: destination.appending(path: "History.store-wal"))
+
+        try HistoryStore.verifyStoreMigrated(in: legacy, to: destination)
+
+        // Neither clobbered nor deleted.
+        let current = try String(decoding: Data(contentsOf: destination.appending(path: "History.store-wal")),
+                                as: UTF8.self)
+        #expect(current == "current wal")
+        #expect(FileManager.default.fileExists(atPath: legacy.appending(path: "History.store-wal").path))
+    }
+
     /// An `-shm` is a shared-memory index over the `-wal` — derived state, so a
     /// stray one is noise and must not hold history back.
     @Test func aStraySharedMemoryIndexIsDiscarded() throws {
@@ -204,13 +243,18 @@ struct HistoryStoreTests {
         try HistoryStore.verifyStoreMigrated(in: legacy, to: destination)
     }
 
-    private func legacyAndDestination() throws -> (legacy: URL, destination: URL) {
+    /// A legacy folder, and a destination that already holds a migrated store —
+    /// the state a stranded sidecar has to be judged against.
+    private func legacyAndDestination(withMigratedStore: Bool = true) throws -> (legacy: URL, destination: URL) {
         let legacy = URL.temporaryDirectory.appending(path: "LegacyTests-\(UUID().uuidString)",
                                                      directoryHint: .isDirectory)
         let destination = URL.temporaryDirectory.appending(path: "RootTests-\(UUID().uuidString)",
                                                           directoryHint: .isDirectory)
         for url in [legacy, destination] {
             try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        }
+        if withMigratedStore {
+            try Data("store".utf8).write(to: destination.appending(path: "History.store"))
         }
         return (legacy, destination)
     }
