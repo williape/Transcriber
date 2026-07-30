@@ -603,17 +603,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let target = sessionTarget
         let incognito = isIncognito()
         Task { @MainActor in
-            archive(result, outcome: outcome, target: target, incognito: incognito)
-            if result.audioFailed {
+            let archived = archive(result, outcome: outcome, target: target, incognito: incognito)
+            // Only when there's an entry the recording should have belonged to:
+            // "the transcript was kept, but the audio wasn't" is a lie when
+            // nothing was kept, which is the normal case for a secure-input or
+            // paused session.
+            if archived, result.audioFailed {
                 warnAboutAudioFailureOnce()
             }
         }
     }
 
+    /// Returns whether an entry was persisted.
     private func archive(_ result: SessionResult,
                          outcome: OutputRouter.Outcome?,
                          target: SessionTarget?,
-                         incognito: Bool) {
+                         incognito: Bool) -> Bool {
         guard !incognito else {
             // A password field was focused, so neither the words nor the
             // recording are the app's to keep.
@@ -621,7 +626,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let audio = result.audio {
                 engine.discardRecording(audio)
             }
-            return
+            return false
         }
         guard let historyStore else {
             // `shouldRetainAudio` already refuses without a store, so there
@@ -630,7 +635,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let audio = result.audio {
                 engine.discardRecording(audio)
             }
-            return
+            return false
         }
         guard historyStore.isRecordingEnabled else {
             // History was switched off (or paused) mid-session — the recording
@@ -638,7 +643,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let audio = result.audio {
                 engine.discardRecording(audio)
             }
-            return
+            return false
         }
         let draft = HistoryDraft(text: result.text,
                                  localeIdentifier: result.localeIdentifier,
@@ -655,12 +660,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let audio = result.audio {
                 engine.discardRecording(audio)
             }
-            return
+            return false
         }
         // Keeping to the size cap is cheapest right after the thing that grew it.
         if result.audio != nil {
             historyStore.prune()
         }
+        return true
     }
 
     private func togglePauseHistory() {

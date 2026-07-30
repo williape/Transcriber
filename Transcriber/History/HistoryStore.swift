@@ -71,11 +71,15 @@ final class HistoryStore {
 
     enum MigrationError: LocalizedError {
         case storeLeftBehind(URL)
+        case logLeftBehind(URL)
 
         var errorDescription: String? {
             switch self {
             case .storeLeftBehind(let url):
                 return "The existing history store could not be moved out of \(url.path)."
+            case .logLeftBehind(let url):
+                return "The history store's write-ahead log could not be moved out of \(url.path); "
+                    + "opening the store without it would lose the dictations it holds."
             }
         }
     }
@@ -106,7 +110,8 @@ final class HistoryStore {
     /// can leave the store behind without `migrate` knowing.
     ///
     /// `legacy` is a parameter only so tests can point it somewhere harmless.
-    static func verifyStoreMigrated(in legacy: URL = AppDirectories.legacyRoot) throws {
+    static func verifyStoreMigrated(in legacy: URL = AppDirectories.legacyRoot,
+                                    to destination: URL = AppDirectories.root) throws {
         let manager = FileManager.default
         let legacyStore = legacy.appending(path: storeName, directoryHint: .notDirectory)
         guard !manager.fileExists(atPath: legacyStore.path) else {
@@ -114,14 +119,32 @@ final class HistoryStore {
             // old data is untouched, ready for the next launch to try again.
             throw MigrationError.storeLeftBehind(legacy)
         }
-        // A sidecar whose store has already moved holds no history anyone can
-        // open, so it isn't hiding anything — but the store that did move may be
-        // missing the transactions in it, which is worth saying out loud.
-        let strays = AppDirectories.sidecarSuffixes
-            .map { storeName + $0 }
-            .filter { manager.fileExists(atPath: legacy.appending(path: $0).path) }
-        if !strays.isEmpty {
-            logger.error("Left behind in the old folder: \(strays.joined(separator: ", "), privacy: .public)")
+
+        // The store has arrived; a `-wal` left behind is a different problem.
+        // It holds committed transactions the store file doesn't have yet, and
+        // this is the last moment they can be recovered: opening the database
+        // creates a *fresh* `-wal` at the new location, after which a later
+        // migration would skip the stranded one as "already present" and its
+        // transactions would be lost for good. So reunite it or refuse.
+        let strayLog = legacy.appending(path: storeName + "-wal", directoryHint: .notDirectory)
+        if manager.fileExists(atPath: strayLog.path) {
+            do {
+                try manager.moveItem(at: strayLog,
+                                     to: destination.appending(path: storeName + "-wal",
+                                                               directoryHint: .notDirectory))
+                logger.info("Recovered the write-ahead log left in the old folder")
+            } catch {
+                logger.error("Write-ahead log stranded in the old folder: \(error.localizedDescription, privacy: .public)")
+                throw MigrationError.logLeftBehind(legacy)
+            }
+        }
+
+        // An `-shm` is only a shared-memory index over the `-wal` — derived
+        // state, rebuilt on demand — so a stray one is noise, not data loss.
+        let strayIndex = legacy.appending(path: storeName + "-shm", directoryHint: .notDirectory)
+        if manager.fileExists(atPath: strayIndex.path) {
+            logger.info("Discarding the stale shared-memory index left in the old folder")
+            try? manager.removeItem(at: strayIndex)
         }
     }
 

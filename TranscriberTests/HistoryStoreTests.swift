@@ -134,33 +134,85 @@ struct HistoryStoreTests {
     /// The check that stands between a failed migration and a fresh empty store
     /// opening on top of the user's history.
     @Test func aStoreLeftInTheOldFolderIsRefused() throws {
-        let legacy = URL.temporaryDirectory.appending(path: "LegacyTests-\(UUID().uuidString)",
-                                                     directoryHint: .isDirectory)
-        defer { try? FileManager.default.removeItem(at: legacy) }
-        try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+        let (legacy, destination) = try legacyAndDestination()
+        defer {
+            try? FileManager.default.removeItem(at: legacy)
+            try? FileManager.default.removeItem(at: destination)
+        }
         try Data("store".utf8).write(to: legacy.appending(path: "History.store"))
 
         #expect(throws: HistoryStore.MigrationError.self) {
-            try HistoryStore.verifyStoreMigrated(in: legacy)
+            try HistoryStore.verifyStoreMigrated(in: legacy, to: destination)
         }
     }
 
-    /// A sidecar whose store has already moved holds no history anyone can open,
-    /// so it must not block history for good.
-    @Test func aStraySidecarDoesNotBlockLaunch() throws {
-        let legacy = URL.temporaryDirectory.appending(path: "LegacyTests-\(UUID().uuidString)",
-                                                     directoryHint: .isDirectory)
-        defer { try? FileManager.default.removeItem(at: legacy) }
-        try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+    /// A stranded `-wal` holds committed dictations, and opening the store makes
+    /// a fresh one — so this is the last chance to bring it across.
+    @Test func aStrandedWriteAheadLogIsRecovered() throws {
+        let (legacy, destination) = try legacyAndDestination()
+        defer {
+            try? FileManager.default.removeItem(at: legacy)
+            try? FileManager.default.removeItem(at: destination)
+        }
         try Data("wal".utf8).write(to: legacy.appending(path: "History.store-wal"))
 
-        try HistoryStore.verifyStoreMigrated(in: legacy)
+        try HistoryStore.verifyStoreMigrated(in: legacy, to: destination)
+
+        let moved = destination.appending(path: "History.store-wal")
+        #expect(FileManager.default.fileExists(atPath: moved.path))
+        #expect(FileManager.default.fileExists(atPath: legacy.appending(path: "History.store-wal").path) == false)
+    }
+
+    /// If it can't be brought across, history waits rather than opening a store
+    /// that is quietly missing those dictations.
+    @Test func anImmovableWriteAheadLogIsRefused() throws {
+        let (legacy, destination) = try legacyAndDestination()
+        let log = legacy.appending(path: "History.store-wal")
+        defer {
+            try? FileManager.default.setAttributes([.immutable: false], ofItemAtPath: log.path)
+            try? FileManager.default.removeItem(at: legacy)
+            try? FileManager.default.removeItem(at: destination)
+        }
+        try Data("wal".utf8).write(to: log)
+        try FileManager.default.setAttributes([.immutable: true], ofItemAtPath: log.path)
+
+        #expect(throws: HistoryStore.MigrationError.self) {
+            try HistoryStore.verifyStoreMigrated(in: legacy, to: destination)
+        }
+    }
+
+    /// An `-shm` is a shared-memory index over the `-wal` — derived state, so a
+    /// stray one is noise and must not hold history back.
+    @Test func aStraySharedMemoryIndexIsDiscarded() throws {
+        let (legacy, destination) = try legacyAndDestination()
+        defer {
+            try? FileManager.default.removeItem(at: legacy)
+            try? FileManager.default.removeItem(at: destination)
+        }
+        try Data("shm".utf8).write(to: legacy.appending(path: "History.store-shm"))
+
+        try HistoryStore.verifyStoreMigrated(in: legacy, to: destination)
+
+        #expect(FileManager.default.fileExists(atPath: legacy.appending(path: "History.store-shm").path) == false)
     }
 
     @Test func noOldFolderIsFine() throws {
-        try HistoryStore.verifyStoreMigrated(
-            in: URL.temporaryDirectory.appending(path: "LegacyTests-\(UUID().uuidString)",
-                                                 directoryHint: .isDirectory))
+        let (legacy, destination) = try legacyAndDestination()
+        try FileManager.default.removeItem(at: legacy)
+        defer { try? FileManager.default.removeItem(at: destination) }
+
+        try HistoryStore.verifyStoreMigrated(in: legacy, to: destination)
+    }
+
+    private func legacyAndDestination() throws -> (legacy: URL, destination: URL) {
+        let legacy = URL.temporaryDirectory.appending(path: "LegacyTests-\(UUID().uuidString)",
+                                                     directoryHint: .isDirectory)
+        let destination = URL.temporaryDirectory.appending(path: "RootTests-\(UUID().uuidString)",
+                                                          directoryHint: .isDirectory)
+        for url in [legacy, destination] {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        }
+        return (legacy, destination)
     }
 
     // MARK: - Export
