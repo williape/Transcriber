@@ -11,13 +11,20 @@ struct HistoryListView: View {
     let actions: HistoryActions
     let store: HistoryStore
 
-    @Environment(\.modelContext) private var context
     @Query(sort: \HistoryEntry.createdAt, order: .reverse) private var entries: [HistoryEntry]
     @AppStorage("keepsTranscriptHistory") private var keepsTranscriptHistory = true
 
     @State private var searchText = ""
     @State private var selection: Set<PersistentIdentifier> = []
     @State private var confirmingBulkDelete = false
+    /// Set when a save didn't stick. The store logs the underlying error; this is
+    /// only here so the window doesn't imply a change that never happened.
+    @State private var failureMessage: String?
+
+    private var isShowingFailure: Binding<Bool> {
+        Binding(get: { failureMessage != nil },
+                set: { if !$0 { failureMessage = nil } })
+    }
 
     var body: some View {
         NavigationSplitView {
@@ -34,6 +41,11 @@ struct HistoryListView: View {
             }
         } message: {
             Text("This can't be undone.")
+        }
+        .alert("Couldn't save that change", isPresented: isShowingFailure) {
+            Button("OK") {}
+        } message: {
+            Text(failureMessage ?? "")
         }
     }
 
@@ -84,7 +96,7 @@ struct HistoryListView: View {
             HistoryDetailView(entry: entry,
                               actions: actions,
                               onDelete: { delete([entry]) },
-                              onDeleteAudio: { store.deleteAudio(of: entry) },
+                              onDeleteAudio: { deleteAudio(of: entry) },
                               onTogglePin: { togglePin(entry) })
         } else if selection.count > 1 {
             multipleSelection
@@ -162,13 +174,29 @@ struct HistoryListView: View {
             selection.remove(entry.persistentModelID)
         }
         // Through the store, so the entry's recording goes with it.
-        store.delete(doomed)
+        guard store.delete(doomed) else {
+            // The store rolled back, so the rows are still there and `@Query`
+            // will put them back on screen — which would read as the delete
+            // being ignored unless we say what happened.
+            failureMessage = doomed.count == 1
+                ? "That transcript couldn't be deleted. Check Console for details."
+                : "Those \(doomed.count) transcripts couldn't be deleted. Check Console for details."
+            return
+        }
     }
 
-    /// Pinned entries survive the age limit and the audio size cap.
+    private func deleteAudio(of entry: HistoryEntry) {
+        guard store.deleteAudio(of: entry) else {
+            failureMessage = "That recording couldn't be deleted. Check Console for details."
+            return
+        }
+    }
+
     private func togglePin(_ entry: HistoryEntry) {
-        entry.isPinned.toggle()
-        try? context.save()
+        guard store.setPinned(!entry.isPinned, on: entry) else {
+            failureMessage = "The pin couldn't be saved. Check Console for details."
+            return
+        }
     }
 }
 
@@ -197,7 +225,10 @@ struct HistoryGroup: Identifiable {
         let calendar = Calendar.current
         if calendar.isDateInToday(date) { return "Today" }
         if calendar.isDateInYesterday(date) { return "Yesterday" }
-        if let weekAgo = calendar.date(byAdding: .day, value: -7, to: .now), date > weekAgo {
+        // The calendar's own week, not a rolling seven days — otherwise a
+        // Wednesday's "This Week" swallows the back half of the week before.
+        if let thisWeek = calendar.dateInterval(of: .weekOfYear, for: .now),
+           thisWeek.contains(date) {
             return "This Week"
         }
         return date.formatted(.dateTime.month(.wide).year())

@@ -211,6 +211,14 @@ final class TranscriptionEngine {
         } catch {
             await analyzer?.cancelAndFinishNow()
             resultsTask?.cancel()
+            // Cancelling isn't waiting: the task's `catch` assigns `streamError`
+            // and its body calls `onTranscript`, so letting it outlive this
+            // method lets it land in whatever session comes next.
+            await resultsTask?.value
+            // This session is reported as the finalize failure, not as a
+            // truncated transcript, so the cancellation the await just collected
+            // must not be left for the next one to trip over.
+            streamError = nil
             // The recording was already finalized above, and this session now
             // ends with no `SessionResult` — so no history entry will ever
             // reference the file. Take it with us rather than leaving an orphan
@@ -291,6 +299,11 @@ final class TranscriptionEngine {
 
         await analyzer?.cancelAndFinishNow()
         resultsTask?.cancel()
+        // Awaited, not just cancelled: the task writes `streamError` from its
+        // `catch` and pushes text through `onTranscript`, and a session that
+        // starts while it's still unwinding would inherit both. Clearing the
+        // state below only helps if nothing can still be writing to it.
+        await resultsTask?.value
         committed = ""
         segments = []
         sessionStartedAt = nil

@@ -40,8 +40,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var sessionTask: Task<Void, Never>?
     private var mainHotkeyID: HotkeyManager.HotkeyID?
     /// The app that was frontmost when recording started — which, because the
-    /// panel never activates, is still the insertion target when it ends.
-    private var sessionTargetApp: (bundleID: String?, name: String?)?
+    /// panel never activates, is normally still the insertion target when it
+    /// ends. The running instance is kept too, so delivery can bring it back if
+    /// one of *our* windows had focus instead.
+    private struct SessionTarget {
+        let app: NSRunningApplication?
+        let bundleID: String?
+        let name: String?
+    }
+    private var sessionTarget: SessionTarget?
+    /// Whether secure input was active when recording started — i.e. a password
+    /// field was focused. Captured at the start (PRD §"startDictation") because
+    /// focus can move before the transcript is delivered.
+    private var sessionHadSecureInput = false
     /// Keeps the "couldn't save audio" alert to once per app run.
     private var hasWarnedAboutAudioFailure = false
     /// Bumped for every dictation/file operation so progress ticks that arrive
@@ -433,7 +444,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The last app that wasn't us — right whether the user was in another
         // app or had our own Settings window open.
         let target = frontmostAppTracker.lastExternalApp
-        sessionTargetApp = (target?.bundleIdentifier, target?.localizedName)
+        sessionTarget = SessionTarget(app: target,
+                                      bundleID: target?.bundleIdentifier,
+                                      name: target?.localizedName)
+        // Read before the session starts, while the focus that prompted it is
+        // still the current one.
+        sessionHadSecureInput = IsSecureEventInputEnabled()
         sessionTask = Task { @MainActor in
             defer { sessionTask = nil }
             appState.clearTranscript()
@@ -489,21 +505,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Whether this session's audio should be kept.
     ///
-    /// Secure input means a password field is focused. Recording that is exactly
-    /// the thing a dictation tool must not do, so it overrides the preference.
+    /// Nothing about a secure-input session is kept (see `isIncognito`), so the
+    /// audio goes with the transcript.
     private func shouldRetainAudio() -> Bool {
         // No store means no entry will ever reference the file, so recording one
         // would only leave an orphan behind.
-        guard historyStore != nil else { return false }
+        guard historyStore != nil, !isIncognito() else { return false }
         let preferences = Preferences.shared
-        guard preferences.keepsTranscriptHistory,
-              preferences.keepsAudioRecordings,
-              !preferences.historyPaused else { return false }
-        if IsSecureEventInputEnabled() {
-            logger.info("Secure input active; not retaining audio for this session")
-            return false
-        }
-        return true
+        return preferences.keepsTranscriptHistory
+            && preferences.keepsAudioRecordings
+            && !preferences.historyPaused
+    }
+
+    /// Whether this dictation must leave no trace — the PRD's "Incognito" row.
+    ///
+    /// Secure input means a password field is focused, so the words are very
+    /// likely a credential. Archiving *the text* is as much the thing a dictation
+    /// tool must not do as archiving the audio, which is why this gates the whole
+    /// entry rather than just the recording.
+    ///
+    /// Checked both at session start and again at delivery: a session begun in an
+    /// ordinary field and finished in a password one is exactly the case worth
+    /// catching, and the reverse costs only one unarchived dictation.
+    private func isIncognito() -> Bool {
+        sessionHadSecureInput || IsSecureEventInputEnabled()
     }
 
     private func deliver(_ result: SessionResult) async {
@@ -520,13 +545,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         appState.updateTranscript(committed: result.text, volatile: "")
         appState.transition(to: .inserting)
-        let outcome = await outputRouter.deliver(result.text, mode: Preferences.shared.insertionMode)
+        let outcome = await route(result.text)
         logger.info("Delivery outcome: \(String(describing: outcome), privacy: .public)")
         // After delivery, so the archived outcome is the real one.
         recordHistory(result, outcome: outcome)
-        if result.audioFailed {
-            warnAboutAudioFailureOnce()
+    }
+
+    /// Delivers a finished transcript to the app the session started in.
+    ///
+    /// The non-activating panel normally leaves that app frontmost, so a plain
+    /// paste lands where the user was typing. But a dictation started while one of
+    /// *our* windows had focus — Settings, History — would otherwise paste into
+    /// that window while the history entry claimed the external app. When we're
+    /// the active app, hand over to the same bring-it-back-and-confirm path
+    /// "Insert Again" uses, which falls back to the clipboard if the target can't
+    /// be reached.
+    private func route(_ text: String) async -> OutputRouter.Outcome {
+        let mode = Preferences.shared.insertionMode
+        guard NSRunningApplication.current.isActive else {
+            return await outputRouter.deliver(text, mode: mode)
         }
+        return await outputRouter.reinsert(text, mode: mode, into: sessionTarget?.app)
     }
 
     /// Told once per app run: the transcript survived, the recording didn't.
@@ -548,7 +587,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.runModal()
     }
 
+    /// Hands the finished session to the store — *after* the state machine has
+    /// reached `.idle`.
+    ///
+    /// PRD F1.4: writing an entry must not gate the `inserting → idle`
+    /// transition, and neither should the "couldn't save audio" alert, which
+    /// would hold the panel open in `.inserting` for as long as it's up. The
+    /// write still happens on the main actor through the store's main context
+    /// (plan §"HistoryStore writes through the main context") — the task only
+    /// lets the transition go first.
+    ///
+    /// Everything session-scoped is read *here*, synchronously, because the next
+    /// dictation can begin before the task runs and would overwrite it.
     private func recordHistory(_ result: SessionResult, outcome: OutputRouter.Outcome?) {
+        let target = sessionTarget
+        let incognito = isIncognito()
+        Task { @MainActor in
+            archive(result, outcome: outcome, target: target, incognito: incognito)
+            if result.audioFailed {
+                warnAboutAudioFailureOnce()
+            }
+        }
+    }
+
+    private func archive(_ result: SessionResult,
+                         outcome: OutputRouter.Outcome?,
+                         target: SessionTarget?,
+                         incognito: Bool) {
+        guard !incognito else {
+            // A password field was focused, so neither the words nor the
+            // recording are the app's to keep.
+            logger.info("Secure input; this dictation was not archived")
+            if let audio = result.audio {
+                engine.discardRecording(audio)
+            }
+            return
+        }
         guard let historyStore else {
             // `shouldRetainAudio` already refuses without a store, so there
             // shouldn't be audio here — but an unowned recording must never be
@@ -570,8 +644,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                  localeIdentifier: result.localeIdentifier,
                                  duration: result.duration,
                                  isPartial: result.isPartial,
-                                 targetAppBundleID: sessionTargetApp?.bundleID,
-                                 targetAppName: sessionTargetApp?.name,
+                                 targetAppBundleID: target?.bundleID,
+                                 targetAppName: target?.name,
                                  deliveryOutcomeRaw: outcome?.rawValue,
                                  audioFilename: result.audio?.filename,
                                  audioByteCount: result.audio?.byteCount,

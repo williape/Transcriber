@@ -69,33 +69,66 @@ final class HistoryStore {
                                        configurations: configuration)
     }
 
-    /// Brings anything left in the old Application Support folder across.
-    ///
-    /// A failed move is only fatal when it's *the store* that's still back there:
-    /// opening a fresh one at the new location would hide the legacy history
-    /// behind an empty list, and — since the destination would then exist — stop
-    /// the move ever being retried. Anything else that wouldn't come (a stray
-    /// file, the Recordings folder) is logged and left for the next launch;
-    /// history still works today.
+    enum MigrationError: LocalizedError {
+        case storeLeftBehind(URL)
+
+        var errorDescription: String? {
+            switch self {
+            case .storeLeftBehind(let url):
+                return "The existing history store could not be moved out of \(url.path)."
+            }
+        }
+    }
+
+    /// Brings anything left in the old Application Support folder across, then
+    /// refuses to go on if the store didn't make it.
     private static func migrateLegacyRoot() throws {
         do {
             try AppDirectories.migrate(from: AppDirectories.legacyRoot, to: AppDirectories.root)
         } catch {
+            // Not rethrown here: what matters isn't whether *something* failed
+            // but whether the store specifically is still back there, which the
+            // check below establishes either way.
             logger.error("Migration incomplete: \(error.localizedDescription, privacy: .public)")
-            let manager = FileManager.default
-            let legacyStore = AppDirectories.legacyRoot.appending(path: storeName,
-                                                                  directoryHint: .notDirectory)
-            if manager.fileExists(atPath: legacyStore.path),
-               !manager.fileExists(atPath: storeURL.path) {
-                throw error
-            }
+        }
+        try verifyStoreMigrated()
+    }
+
+    /// The condition that has to hold before the store at the new location may
+    /// be opened: the old one must be gone from the legacy folder. Opening a
+    /// fresh store beside a legacy one hides the user's history behind an empty
+    /// list, and — the destination now existing — stops the move ever being
+    /// retried.
+    ///
+    /// Deliberately run after *every* attempt rather than only a throwing one: a
+    /// family is also skipped without error when part of it is already at the
+    /// destination (a stray `-shm` there, say), and a rollback that itself fails
+    /// can leave the store behind without `migrate` knowing.
+    ///
+    /// `legacy` is a parameter only so tests can point it somewhere harmless.
+    static func verifyStoreMigrated(in legacy: URL = AppDirectories.legacyRoot) throws {
+        let manager = FileManager.default
+        let legacyStore = legacy.appending(path: storeName, directoryHint: .notDirectory)
+        guard !manager.fileExists(atPath: legacyStore.path) else {
+            // History is unavailable for this run (AppDelegate says so) and the
+            // old data is untouched, ready for the next launch to try again.
+            throw MigrationError.storeLeftBehind(legacy)
+        }
+        // A sidecar whose store has already moved holds no history anyone can
+        // open, so it isn't hiding anything — but the store that did move may be
+        // missing the transactions in it, which is worth saying out loud.
+        let strays = AppDirectories.sidecarSuffixes
+            .map { storeName + $0 }
+            .filter { manager.fileExists(atPath: legacy.appending(path: $0).path) }
+        if !strays.isEmpty {
+            logger.error("Left behind in the old folder: \(strays.joined(separator: ", "), privacy: .public)")
         }
     }
 
     /// Moves the store and its SQLite sidecars out of the way.
     private static func setAside(_ url: URL) throws {
         let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
-        for suffix in ["", "-wal", "-shm"] {
+        for suffix in [""] + AppDirectories.sidecarSuffixes {
             let source = URL(filePath: url.path + suffix)
             guard FileManager.default.fileExists(atPath: source.path) else { continue }
             let destination = URL(filePath: url.path + ".corrupt-\(stamp)" + suffix)
@@ -153,10 +186,20 @@ final class HistoryStore {
         }
     }
 
+    private func fetchAllEntries() throws -> [HistoryEntry] {
+        try container.mainContext.fetch(
+            FetchDescriptor<HistoryEntry>(sortBy: [SortDescriptor(\.createdAt, order: .reverse)]))
+    }
+
+    /// Entries, or an empty array if they can't be read.
+    ///
+    /// Only safe where "nothing came back" and "nothing is there" mean the same
+    /// thing. Anything that **deletes files** by comparing the store against the
+    /// recordings folder must use `fetchAllEntries()` instead: a failed fetch
+    /// looks exactly like an empty store, and would take every recording with it.
     private func allEntries() -> [HistoryEntry] {
         do {
-            return try container.mainContext.fetch(
-                FetchDescriptor<HistoryEntry>(sortBy: [SortDescriptor(\.createdAt, order: .reverse)]))
+            return try fetchAllEntries()
         } catch {
             Self.logger.error("Could not fetch entries: \(error.localizedDescription, privacy: .public)")
             return []
@@ -165,38 +208,62 @@ final class HistoryStore {
 
     // MARK: - Deletion
 
-    /// Deletes entries and any audio they own.
+    /// Deletes entries and any audio they own, reporting whether it stuck so the
+    /// UI can say something rather than appearing to have deleted them.
     ///
     /// Files go **after** the save, never before: a failed save rolls the entries
     /// back, and an entry that still points at a recording has to still have one.
-    func delete(_ doomed: [HistoryEntry]) {
-        guard !doomed.isEmpty else { return }
+    @discardableResult
+    func delete(_ doomed: [HistoryEntry]) -> Bool {
+        guard !doomed.isEmpty else { return true }
         let context = container.mainContext
         let filenames = doomed.compactMap(\.audioFilename)
         for entry in doomed {
             context.delete(entry)
         }
-        guard save(context, describing: "delete \(doomed.count) entries") else { return }
+        guard save(context, describing: "delete \(doomed.count) entries") else { return false }
         for filename in filenames {
             RecordingsDirectory.delete(filename: filename)
         }
+        return true
     }
 
     /// Drops an entry's recording but keeps its transcript.
-    func deleteAudio(of entry: HistoryEntry, pruned: Bool = false) {
-        guard let filename = entry.audioFilename else { return }
+    @discardableResult
+    func deleteAudio(of entry: HistoryEntry, pruned: Bool = false) -> Bool {
+        guard let filename = entry.audioFilename else { return true }
         entry.audioFilename = nil
         entry.audioByteCount = nil
         entry.audioPrunedAt = pruned ? Date() : nil
-        guard save(container.mainContext, describing: "delete audio") else { return }
+        guard save(container.mainContext, describing: "delete audio") else { return false }
         RecordingsDirectory.delete(filename: filename)
+        return true
+    }
+
+    /// Pinned entries survive the age limit and the audio size cap.
+    ///
+    /// Lives here rather than in the view so the write goes through the one place
+    /// that reports a failed save instead of discarding it.
+    @discardableResult
+    func setPinned(_ pinned: Bool, on entry: HistoryEntry) -> Bool {
+        entry.isPinned = pinned
+        return save(container.mainContext, describing: pinned ? "pin entry" : "unpin entry")
     }
 
     /// Everything: entries, and every file in the recordings folder — including
     /// any orphans, which is the point of doing it by folder rather than by row.
     func deleteAll() {
         let context = container.mainContext
-        let all = allEntries()
+        let all: [HistoryEntry]
+        do {
+            all = try fetchAllEntries()
+        } catch {
+            // Not `allEntries()`: an unreadable store would come back as "no
+            // entries", the save would trivially succeed, and every recording
+            // would then be deleted while its entry survived.
+            Self.logger.error("Could not delete all history: \(error.localizedDescription, privacy: .public)")
+            return
+        }
         for entry in all {
             context.delete(entry)
         }
@@ -297,7 +364,16 @@ final class HistoryStore {
     /// deleted, and entries whose file has gone (deleted in Finder, or a session
     /// killed before the `.m4a` was finalized) lose their audio reference.
     func reconcileRecordings() {
-        let entries = allEntries()
+        let entries: [HistoryEntry]
+        do {
+            entries = try fetchAllEntries()
+        } catch {
+            // Same trap as `deleteAll`, and this one runs at every launch: an
+            // unreadable store would leave `referenced` empty and every
+            // recording on disk looking like an orphan.
+            Self.logger.error("Could not reconcile recordings: \(error.localizedDescription, privacy: .public)")
+            return
+        }
         let referenced = Set(entries.compactMap(\.audioFilename))
         let onDisk = RecordingsDirectory.recordingFilenames()
 

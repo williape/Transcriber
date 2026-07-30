@@ -69,7 +69,7 @@ nonisolated enum AppDirectories {
     /// store file yet, and an `-shm` describes the `-wal` — so a store separated
     /// from either is not the database it was, which is why they migrate as one
     /// unit rather than as three files that happen to share a prefix.
-    private static let sidecarSuffixes = ["-wal", "-shm"]
+    static let sidecarSuffixes = ["-wal", "-shm"]
 
     /// Moves everything from `legacy` into `destination`, returning the names it
     /// moved. Existing files at the destination are never overwritten — if any
@@ -88,10 +88,14 @@ nonisolated enum AppDirectories {
 
         var moved: [String] = []
         for family in families(in: names) {
-            if let present = family.first(where: {
+            // Tested against every path the family could own at the destination,
+            // not just the members it actually has: a `-shm` sitting there alone
+            // belongs to some other database, and moving this store in beside it
+            // would pair the two.
+            if let present = claims(of: family[0]).first(where: {
                 manager.fileExists(atPath: destination.appending(path: $0).path)
             }) {
-                logger.error("Not migrating \(present, privacy: .public): already present at the new location")
+                logger.error("Not migrating \(family[0], privacy: .public): \(present, privacy: .public) is already at the new location")
                 continue
             }
             do {
@@ -127,6 +131,12 @@ nonisolated enum AppDirectories {
             families.append([name] + sidecarSuffixes.map { name + $0 }.filter(all.contains))
         }
         return families
+    }
+
+    /// Every filename a store called `base` could occupy, whether or not it
+    /// currently does.
+    private static func claims(of base: String) -> [String] {
+        [base] + sidecarSuffixes.map { base + $0 }
     }
 
     private static func sidecarBase(of name: String) -> String? {

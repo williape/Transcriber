@@ -195,6 +195,31 @@ struct AppDirectoriesTests {
         #expect(FileManager.default.fileExists(atPath: legacy.appending(path: "History.store-wal").path))
     }
 
+    /// Even a lone sidecar at the destination has to hold the whole family back —
+    /// moving the store in beside a stranger's `-shm` would pair a database with
+    /// a log that isn't its own.
+    @Test func aPartialFamilyAtTheDestinationHoldsBackTheWholeFamily() throws {
+        let legacy = temporaryURL()
+        let destination = temporaryURL()
+        defer {
+            try? FileManager.default.removeItem(at: legacy)
+            try? FileManager.default.removeItem(at: destination)
+        }
+
+        try AppDirectories.ensure(legacy)
+        try write("store", to: legacy.appending(path: "History.store"))
+        try write("wal", to: legacy.appending(path: "History.store-wal"))
+        try AppDirectories.ensure(destination)
+        try write("stranger", to: destination.appending(path: "History.store-shm"))
+
+        let moved = try AppDirectories.migrate(from: legacy, to: destination)
+
+        #expect(moved.isEmpty)
+        #expect(FileManager.default.fileExists(atPath: legacy.appending(path: "History.store").path))
+        #expect(FileManager.default.fileExists(atPath: legacy.appending(path: "History.store-wal").path))
+        #expect(FileManager.default.fileExists(atPath: destination.appending(path: "History.store").path) == false)
+    }
+
     /// A `-wal` with no store beside it is just a file with an odd name.
     @Test func anOrphanedSidecarMigratesOnItsOwn() throws {
         let legacy = temporaryURL()

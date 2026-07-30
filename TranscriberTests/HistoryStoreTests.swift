@@ -116,6 +116,53 @@ struct HistoryStoreTests {
         #expect(store.entryCount() == 1)
     }
 
+    // MARK: - Pinning
+
+    @Test func pinningIsSaved() throws {
+        let (store, _) = try makeStore()
+        store.record(draft())
+        let entry = try #require(try entries(in: store).first)
+
+        #expect(store.setPinned(true, on: entry))
+        #expect(try #require(try entries(in: store).first).isPinned)
+        #expect(store.setPinned(false, on: entry))
+        #expect(try #require(try entries(in: store).first).isPinned == false)
+    }
+
+    // MARK: - Migration guard
+
+    /// The check that stands between a failed migration and a fresh empty store
+    /// opening on top of the user's history.
+    @Test func aStoreLeftInTheOldFolderIsRefused() throws {
+        let legacy = URL.temporaryDirectory.appending(path: "LegacyTests-\(UUID().uuidString)",
+                                                     directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: legacy) }
+        try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+        try Data("store".utf8).write(to: legacy.appending(path: "History.store"))
+
+        #expect(throws: HistoryStore.MigrationError.self) {
+            try HistoryStore.verifyStoreMigrated(in: legacy)
+        }
+    }
+
+    /// A sidecar whose store has already moved holds no history anyone can open,
+    /// so it must not block history for good.
+    @Test func aStraySidecarDoesNotBlockLaunch() throws {
+        let legacy = URL.temporaryDirectory.appending(path: "LegacyTests-\(UUID().uuidString)",
+                                                     directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: legacy) }
+        try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+        try Data("wal".utf8).write(to: legacy.appending(path: "History.store-wal"))
+
+        try HistoryStore.verifyStoreMigrated(in: legacy)
+    }
+
+    @Test func noOldFolderIsFine() throws {
+        try HistoryStore.verifyStoreMigrated(
+            in: URL.temporaryDirectory.appending(path: "LegacyTests-\(UUID().uuidString)",
+                                                 directoryHint: .isDirectory))
+    }
+
     // MARK: - Export
 
     /// The export destination is the user's folder, not the app's storage —
