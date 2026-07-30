@@ -313,7 +313,7 @@ struct SessionResult {
 
 ## 10. Settings changes
 
-`SettingsView` becomes a `TabView` with two tabs — **General** (everything that exists today) and **History** (F6). New `UserDefaults` keys, registered in `Preferences` alongside the current ones:
+History controls live on the **single existing Settings page**, not a second tab. A tab holding three or four rows costs a click and a mode to be in for no benefit; the page stays short enough to read at a glance. M4 adds the retention pickers and storage readout to the same page — if it starts to sprawl, the answer is a collapsible section, not tabs. New `UserDefaults` keys, registered in `Preferences` alongside the current ones:
 
 | Key | Type | Default |
 |---|---|---|

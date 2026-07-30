@@ -32,16 +32,6 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        TabView {
-            general
-                .tabItem { Label("General", systemImage: "gearshape") }
-            history
-                .tabItem { Label("History", systemImage: "clock") }
-        }
-        .frame(width: 500)
-    }
-
-    private var general: some View {
         Form {
             LabeledContent("Dictation shortcut") {
                 ShortcutRecorderView(rebinder: rebinder)
@@ -65,6 +55,20 @@ struct SettingsView: View {
             .pickerStyle(.radioGroup)
 
             Toggle("Play sounds when dictation starts and stops", isOn: $playsSounds)
+
+            LabeledContent("History") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle("Keep finished dictations", isOn: $keepsTranscriptHistory)
+                    HStack {
+                        Button("Open History…") {
+                            onOpenHistory()
+                        }
+                        Button("Reveal Folder") {
+                            revealStorageFolder()
+                        }
+                    }
+                }
+            }
 
             LabeledContent("Launch at login") {
                 VStack(alignment: .leading, spacing: 4) {
@@ -95,6 +99,7 @@ struct SettingsView: View {
             }
         }
         .padding(20)
+        .frame(width: 480)
         .onReceive(trustRefresh) { _ in
             accessibilityTrusted = AXIsProcessTrusted()
         }
@@ -106,32 +111,8 @@ struct SettingsView: View {
         }
     }
 
-    private var history: some View {
-        Form {
-            LabeledContent("Dictation history") {
-                VStack(alignment: .leading, spacing: 8) {
-                    Toggle("Keep finished dictations", isOn: $keepsTranscriptHistory)
-                    Button("Open History…") {
-                        onOpenHistory()
-                    }
-                }
-            }
-
-            LabeledContent("Stored in") {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("~/Library/Application Support/\(Bundle.main.bundleIdentifier ?? "Transcriber")")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                    Button("Reveal in Finder") {
-                        revealStorageFolder()
-                    }
-                }
-            }
-        }
-        .padding(20)
-    }
-
+    /// Opens the Application Support folder that holds the history store (and,
+    /// from M3, retained audio).
     private func revealStorageFolder() {
         do {
             let url = try AppDirectories.ensure(AppDirectories.support)
