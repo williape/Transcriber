@@ -10,8 +10,9 @@ import SwiftUI
 /// only), so the standard `Settings` scene machinery isn't available.
 @MainActor
 final class SettingsWindowController: NSWindowController {
-    convenience init(rebinder: ShortcutRebinder) {
-        let hosting = NSHostingController(rootView: SettingsView(rebinder: rebinder))
+    convenience init(rebinder: ShortcutRebinder, onOpenHistory: @escaping () -> Void) {
+        let hosting = NSHostingController(rootView: SettingsView(rebinder: rebinder,
+                                                                onOpenHistory: onOpenHistory))
         let window = NSWindow(contentViewController: hosting)
         window.title = "Transcriber Settings"
         window.styleMask = [.titled, .closable]

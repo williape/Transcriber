@@ -27,22 +27,35 @@ final class MicrophoneCapture {
         }
     }
 
-    private let engine = AVAudioEngine()
+    /// Created per session and released in `stop()`. It must **not** be a
+    /// long-lived property: an `AVAudioEngine` that has ever touched its
+    /// `inputNode` holds the input device open for as long as it exists, which
+    /// (a) pins a Bluetooth headset in narrowband HFP mode, wrecking A2DP
+    /// playback quality for every other app until Transcriber quits, and
+    /// (b) leaves the orange microphone-in-use indicator lit after dictation.
+    private var engine: AVAudioEngine?
     private let logger = Logger(subsystem: "com.pwilliams.Transcriber", category: "Microphone")
 
     func start(targetFormat: AVAudioFormat,
                onLevel: @escaping @Sendable (Double) -> Void,
                onBuffer: @escaping @Sendable (AVAudioPCMBuffer) -> Void) throws {
+        // A previous session's engine should already be gone; be sure, so two
+        // engines never hold the device at once.
+        stop()
+        let engine = AVAudioEngine()
+        self.engine = engine
         let input = engine.inputNode
         let nativeFormat = input.outputFormat(forBus: 0)
         // A dead input (in use elsewhere / nothing connected) reports a zero format.
         guard nativeFormat.sampleRate > 0, nativeFormat.channelCount > 0 else {
+            self.engine = nil
             throw CaptureError.microphoneUnavailable
         }
         // Format mismatch is the classic source of silent failures — always log both.
         logger.info("Mic native: \(nativeFormat, privacy: .public); analyzer: \(targetFormat, privacy: .public)")
 
         guard let converter = AVAudioConverter(from: nativeFormat, to: targetFormat) else {
+            self.engine = nil
             throw CaptureError.converterUnavailable
         }
 
@@ -81,6 +94,7 @@ final class MicrophoneCapture {
             try engine.start()
         } catch {
             input.removeTap(onBus: 0)
+            self.engine = nil
             throw CaptureError.engineStartFailed(error)
         }
         logger.info("Microphone capture started")
@@ -95,9 +109,15 @@ final class MicrophoneCapture {
         return max(0, min(1, (Double(decibels) + 50) / 50))
     }
 
+    /// Tears the engine down completely rather than just stopping it — see the
+    /// note on `engine`. Safe to call repeatedly, and on a session that never
+    /// started.
     func stop() {
+        guard let engine else { return }
+        self.engine = nil
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
-        logger.info("Microphone capture stopped")
+        engine.reset()
+        logger.info("Microphone capture stopped; input device released")
     }
 }

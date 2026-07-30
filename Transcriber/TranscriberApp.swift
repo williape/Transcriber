@@ -32,6 +32,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var fileTranscriber: FileTranscriber!
     /// nil when the history store couldn't be opened at all — dictation still works.
     private var historyStore: HistoryStore?
+    private var historyWindowController: HistoryWindowController?
+    private var frontmostAppTracker: FrontmostAppTracker!
     private var settingsWindowController: SettingsWindowController?
     private var transcriptWindows: [TranscriptWindowController] = []
     private var sessionTask: Task<Void, Never>?
@@ -51,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         engine = TranscriptionEngine()
         outputRouter = OutputRouter()
         fileTranscriber = FileTranscriber()
+        frontmostAppTracker = FrontmostAppTracker()
         openHistoryStore()
 
         engine.onTranscript = { [weak self] committed, volatile in
@@ -70,6 +73,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         statusItemController.onFileDropped = { [weak self] url in
             self?.transcribeFile(url)
+        }
+        statusItemController.onOpenHistory = { [weak self] in
+            self?.openHistory()
+        }
+        statusItemController.recentTranscripts = { [weak self] in
+            self?.recentTranscripts() ?? []
+        }
+        statusItemController.onInsertTranscript = { [weak self] text in
+            self?.reinsert(text)
+        }
+        statusItemController.onCopyLastTranscript = { [weak self] in
+            self?.copyLastTranscript()
         }
         panelController.onEscape = { [weak self] in
             self?.cancelDictation()
@@ -94,6 +109,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // History is a convenience; dictation must not depend on it.
             logger.error("History unavailable: \(error.localizedDescription, privacy: .public)")
         }
+    }
+
+    private func openHistory() {
+        guard let historyStore else {
+            presentHistoryUnavailable()
+            return
+        }
+        if historyWindowController == nil {
+            let actions = HistoryActions(insert: { [weak self] text in
+                await self?.reinsertAndReport(text) ?? .copiedToClipboard
+            })
+            historyWindowController = HistoryWindowController(container: historyStore.container,
+                                                              actions: actions)
+        }
+        historyWindowController?.show()
+    }
+
+    /// Newest entries for the menu bar submenu, as plain values — `@Model`
+    /// objects shouldn't be handed to AppKit menu items that outlive the fetch.
+    private func recentTranscripts(limit: Int = 5) -> [RecentTranscript] {
+        guard let historyStore else { return [] }
+        return historyStore.recent(limit: limit).map { entry in
+            RecentTranscript(title: HistoryFormat.snippet(entry.text, limit: 48),
+                             text: entry.text)
+        }
+    }
+
+    private func reinsert(_ text: String) {
+        Task { @MainActor in
+            _ = await reinsertAndReport(text)
+        }
+    }
+
+    @discardableResult
+    private func reinsertAndReport(_ text: String) async -> OutputRouter.Outcome {
+        let outcome = await outputRouter.reinsert(text,
+                                                 mode: Preferences.shared.insertionMode,
+                                                 into: frontmostAppTracker.lastExternalApp)
+        logger.info("Re-insert outcome: \(String(describing: outcome), privacy: .public)")
+        return outcome
+    }
+
+    private func copyLastTranscript() {
+        guard let text = recentTranscripts(limit: 1).first?.text else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        logger.info("Copied last transcript (\(text.count) characters)")
+    }
+
+    private func presentHistoryUnavailable() {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "History unavailable"
+        alert.informativeText = "Transcriber couldn't open its history store, so past dictations can't be shown. Dictation itself is unaffected."
+        alert.alertStyle = .warning
+        alert.runModal()
     }
 
     // MARK: - Main hotkey (re)registration
@@ -249,10 +320,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func startDictation() {
         operationGeneration += 1
         let generation = operationGeneration
-        // Captured before the panel appears; NSWorkspace would report us once
-        // any of our own windows came up.
-        let frontmost = NSWorkspace.shared.frontmostApplication
-        sessionTargetApp = (frontmost?.bundleIdentifier, frontmost?.localizedName)
+        // The last app that wasn't us — right whether the user was in another
+        // app or had our own Settings window open.
+        let target = frontmostAppTracker.lastExternalApp
+        sessionTargetApp = (target?.bundleIdentifier, target?.localizedName)
         sessionTask = Task { @MainActor in
             defer { sessionTask = nil }
             appState.clearTranscript()
@@ -348,7 +419,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func openSettings() {
         if settingsWindowController == nil {
-            settingsWindowController = SettingsWindowController(rebinder: makeShortcutRebinder())
+            settingsWindowController = SettingsWindowController(
+                rebinder: makeShortcutRebinder(),
+                onOpenHistory: { [weak self] in self?.openHistory() })
         }
         settingsWindowController?.show()
     }

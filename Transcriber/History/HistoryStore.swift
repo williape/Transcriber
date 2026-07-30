@@ -51,8 +51,11 @@ final class HistoryStore {
 
     /// Explicit configuration — lets tests run against an in-memory store and
     /// their own defaults instead of the user's real ones.
-    init(configuration: ModelConfiguration, preferences: Preferences = .shared) throws {
-        self.preferences = preferences
+    /// `preferences` defaults to the shared instance — resolved in the body
+    /// rather than as a default argument, which would be evaluated off the main
+    /// actor.
+    init(configuration: ModelConfiguration, preferences: Preferences? = nil) throws {
+        self.preferences = preferences ?? .shared
         container = try ModelContainer(for: Schema(versionedSchema: HistorySchemaV1.self),
                                        migrationPlan: HistoryMigrationPlan.self,
                                        configurations: configuration)
@@ -84,6 +87,20 @@ final class HistoryStore {
         } catch {
             context.rollback()
             Self.logger.error("Could not record history entry: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Most recent entries, newest first — backs the menu bar's Recent
+    /// Transcripts submenu.
+    func recent(limit: Int) -> [HistoryEntry] {
+        var descriptor = FetchDescriptor<HistoryEntry>(
+            sortBy: [SortDescriptor(\.createdAt, order: .reverse)])
+        descriptor.fetchLimit = limit
+        do {
+            return try container.mainContext.fetch(descriptor)
+        } catch {
+            Self.logger.error("Could not fetch recent entries: \(error.localizedDescription, privacy: .public)")
+            return []
         }
     }
 

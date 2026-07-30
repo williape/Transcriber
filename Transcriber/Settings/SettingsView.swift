@@ -11,6 +11,7 @@ import SwiftUI
 
 struct SettingsView: View {
     let rebinder: ShortcutRebinder
+    let onOpenHistory: () -> Void
 
     // Same UserDefaults keys Preferences uses.
     @AppStorage("insertionMode") private var insertionMode = OutputRouter.InsertionMode.paste.rawValue
@@ -108,12 +109,11 @@ struct SettingsView: View {
     private var history: some View {
         Form {
             LabeledContent("Dictation history") {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 8) {
                     Toggle("Keep finished dictations", isOn: $keepsTranscriptHistory)
-                    Text("Transcripts are kept on this Mac only, unencrypted — FileVault is what protects them at rest. Audio is never recorded.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
+                    Button("Open History…") {
+                        onOpenHistory()
+                    }
                 }
             }
 
@@ -174,5 +174,5 @@ struct SettingsView: View {
 }
 
 #Preview {
-    SettingsView(rebinder: .noop)
+    SettingsView(rebinder: .noop, onOpenHistory: {})
 }

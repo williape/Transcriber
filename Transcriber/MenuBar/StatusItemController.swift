@@ -8,6 +8,12 @@ import Observation
 import UniformTypeIdentifiers
 import os
 
+/// One entry as the menu needs it — a title to show and the text to insert.
+struct RecentTranscript {
+    let title: String
+    let text: String
+}
+
 /// Owns the `NSStatusItem`, its menu, and the icon-per-state mapping.
 @MainActor
 final class StatusItemController: NSObject {
@@ -15,10 +21,16 @@ final class StatusItemController: NSObject {
     var onOpenSettings: (() -> Void)?
     var onTranscribeFilePrompt: (() -> Void)?
     var onFileDropped: ((URL) -> Void)?
+    var onOpenHistory: (() -> Void)?
+    var onInsertTranscript: ((String) -> Void)?
+    var onCopyLastTranscript: (() -> Void)?
+    /// Asked for fresh entries each time the submenu opens.
+    var recentTranscripts: (() -> [RecentTranscript])?
 
     private let appState: AppState
     private let statusItem: NSStatusItem
     private let dictationItem: NSMenuItem
+    private let recentMenu = NSMenu()
     private let logger = Logger(subsystem: "com.pwilliams.Transcriber", category: "StatusItem")
 
     init(appState: AppState) {
@@ -56,6 +68,23 @@ final class StatusItemController: NSObject {
                                         keyEquivalent: "")
         transcribeItem.target = self
         menu.addItem(transcribeItem)
+
+        menu.addItem(.separator())
+
+        let historyItem = NSMenuItem(title: "History…", action: #selector(openHistory), keyEquivalent: "y")
+        historyItem.target = self
+        menu.addItem(historyItem)
+
+        let recentItem = NSMenuItem(title: "Recent Transcripts", action: nil, keyEquivalent: "")
+        recentMenu.delegate = self
+        recentItem.submenu = recentMenu
+        menu.addItem(recentItem)
+
+        let copyLastItem = NSMenuItem(title: "Copy Last Transcript",
+                                      action: #selector(copyLastTranscript),
+                                      keyEquivalent: "")
+        copyLastItem.target = self
+        menu.addItem(copyLastItem)
 
         menu.addItem(.separator())
 
@@ -123,6 +152,43 @@ final class StatusItemController: NSObject {
 
     @objc private func transcribeFilePrompt() {
         onTranscribeFilePrompt?()
+    }
+
+    @objc private func openHistory() {
+        onOpenHistory?()
+    }
+
+    @objc private func copyLastTranscript() {
+        onCopyLastTranscript?()
+    }
+
+    @objc private func insertRecentTranscript(_ sender: NSMenuItem) {
+        guard let text = sender.representedObject as? String else { return }
+        onInsertTranscript?(text)
+    }
+}
+
+extension StatusItemController: NSMenuDelegate {
+    /// Rebuilt on every open rather than kept in sync — the list is short and
+    /// the menu is the only thing that reads it.
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu === recentMenu else { return }
+        menu.removeAllItems()
+        let recents = recentTranscripts?() ?? []
+        guard !recents.isEmpty else {
+            let empty = NSMenuItem(title: "No Recent Transcripts", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            menu.addItem(empty)
+            return
+        }
+        for recent in recents {
+            let item = NSMenuItem(title: recent.title,
+                                  action: #selector(insertRecentTranscript(_:)),
+                                  keyEquivalent: "")
+            item.target = self
+            item.representedObject = recent.text
+            menu.addItem(item)
+        }
     }
 }
 

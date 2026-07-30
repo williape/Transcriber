@@ -47,6 +47,40 @@ final class OutputRouter {
         }
     }
 
+    /// Re-inserts an archived transcript into `app`.
+    ///
+    /// The live dictation path can paste immediately because the non-activating
+    /// panel leaves the target app frontmost. The History window and the menu bar
+    /// both take focus, so here the previous app has to be brought back *and
+    /// confirmed frontmost* before a synthetic ⌘V would land anywhere useful.
+    func reinsert(_ text: String, mode: InsertionMode, into app: NSRunningApplication?) async -> Outcome {
+        guard mode == .paste, let app, !app.isTerminated else {
+            copyToClipboard(text)
+            logger.info("Re-insert target unavailable; left \(text.count) characters on the clipboard")
+            return .copiedToClipboard
+        }
+        app.activate()
+        guard await waitUntilFrontmost(app) else {
+            copyToClipboard(text)
+            logger.info("Could not re-activate \(app.bundleIdentifier ?? "target", privacy: .public); left text on clipboard")
+            return .copiedToClipboard
+        }
+        return await deliver(text, mode: mode)
+    }
+
+    private func waitUntilFrontmost(_ app: NSRunningApplication,
+                                    timeout: Duration = .milliseconds(1000)) async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        while clock.now < deadline {
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier == app.processIdentifier {
+                return true
+            }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        return false
+    }
+
     /// Shows the system Accessibility onboarding dialog on the first refusal;
     /// afterwards falls back silently (Settings has a shortcut button too).
     private func ensureAccessibilityTrust() -> Bool {
