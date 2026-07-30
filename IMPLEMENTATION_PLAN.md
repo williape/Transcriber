@@ -153,7 +153,7 @@ Each phase ends buildable and manually verifiable. Claude Code can verify *compi
 Full spec: `PRD - Transcription History & Audio Retention.md` (approved 2026-07-30). Branch `feature/history-and-audio-retention`. Milestones M1–M5 are defined in that PRD's §14; status here.
 
 - **M1 — history store** — ✅ built, ⏳ awaiting manual check. `HistoryEntry` (SwiftData, versioned schema v1) + `HistoryStore` + `AppDirectories`; every completed dictation is archived with its transcript, timeline segments, locale, duration, target app and delivery outcome; Settings gains a History tab with the on/off toggle. Audio and pin fields are in the v1 schema but unused, so M3/M4 need no migration. `finishSession()` now returns a `SessionResult` instead of a `String`, and `transcriptionIncomplete` carries one too, so truncated sessions are archived rather than only inserted.
-- **M2 — History window** — not started.
+- **M2 — History window** — ✅ built, ⏳ awaiting manual check. Searchable, date-grouped list + detail pane with Copy / Insert Again / Save… / Delete; multi-select; menu bar History… (⌘Y), Recent Transcripts submenu, Copy Last Transcript. Re-insertion goes through `FrontmostAppTracker` + `OutputRouter.reinsert()`, which re-activates the last non-Transcriber app and waits for the activation before pasting — the live-dictation path can't be reused because the History window and the menu bar both take focus.
 - **M3 — audio retention + playback** — not started.
 - **M4 — retention policy, pruning, pin UI, export** — not started.
 - **M5 — re-transcribe** — not started.
