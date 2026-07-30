@@ -40,7 +40,10 @@ struct SessionAudioRecorderTests {
         for _ in 0..<10 {
             recorder.append(try buffer(format))
         }
-        let recorded = try #require(await recorder.finish())
+        guard case .recorded(let recorded) = await recorder.finish() else {
+            Issue.record("Expected a recording")
+            return
+        }
 
         #expect(recorded.filename == recorder.filename)
         #expect(recorded.byteCount > 0)
@@ -65,13 +68,33 @@ struct SessionAudioRecorderTests {
         #expect(UUID(uuidString: String(recorder.filename.dropLast(4))) == nil)
     }
 
-    /// A session with no audio shouldn't leave a stub file behind.
+    /// A session with no audio shouldn't leave a stub file behind — and reports
+    /// `.empty`, not `.failed`: a silent dictation isn't worth warning about.
     @Test func emptyRecordingIsDiscarded() async throws {
         let recorder = try SessionAudioRecorder(format: try format())
 
-        let recorded = await recorder.finish()
+        let outcome = await recorder.finish()
 
-        #expect(recorded == nil)
+        #expect(outcome == .empty)
+        #expect(FileManager.default.fileExists(
+            atPath: RecordingsDirectory.url(for: recorder.filename).path) == false)
+    }
+
+    /// A buffer whose format doesn't match the file would raise an uncatchable
+    /// Objective-C exception inside `write(from:)`, so the recorder refuses it
+    /// and reports failure — which is what surfaces the "couldn't save audio"
+    /// warning rather than losing the recording silently.
+    @Test func mismatchedBufferFormatFailsLoudly() async throws {
+        let recorder = try SessionAudioRecorder(format: try format())
+        let wrongFormat = try #require(AVAudioFormat(commonFormat: .pcmFormatFloat32,
+                                                    sampleRate: 44_100,
+                                                    channels: 2,
+                                                    interleaved: false))
+
+        recorder.append(try buffer(wrongFormat))
+        let outcome = await recorder.finish()
+
+        #expect(outcome == .failed)
         #expect(FileManager.default.fileExists(
             atPath: RecordingsDirectory.url(for: recorder.filename).path) == false)
     }

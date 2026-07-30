@@ -27,6 +27,16 @@ nonisolated final class SessionAudioRecorder: @unchecked Sendable {
         let byteCount: Int64
     }
 
+    /// Why a session ended up with no file. `empty` and `failed` are kept apart
+    /// on purpose: a silent dictation is normal and says nothing to the user,
+    /// while a failed write means their audio is being lost and they should hear
+    /// about it.
+    enum Outcome: Sendable, Equatable {
+        case recorded(Recorded)
+        case empty
+        case failed
+    }
+
     /// `AVAudioPCMBuffer` isn't `Sendable`, but the hand-off here is strictly
     /// one-way: `MicrophoneCapture` allocates a fresh buffer per tap callback and
     /// never touches it again.
@@ -105,27 +115,35 @@ nonisolated final class SessionAudioRecorder: @unchecked Sendable {
         }
     }
 
-    /// Closes the file and returns what was written, or nil if the recording
-    /// failed or captured nothing (in which case the file is removed).
-    func finish() async -> Recorded? {
+    /// Closes the file and reports what happened. Anything but `.recorded`
+    /// removes the file.
+    func finish() async -> Outcome {
         await withCheckedContinuation { continuation in
             queue.async {
                 // Releasing the file closes it, which is what writes the MPEG-4
                 // `moov` atom — without this the .m4a is unplayable.
                 self.file = nil
-                guard !self.failed, self.framesWritten > 0 else {
+                if self.failed {
                     self.removeFile()
-                    continuation.resume(returning: nil)
+                    continuation.resume(returning: .failed)
+                    return
+                }
+                guard self.framesWritten > 0 else {
+                    self.removeFile()
+                    continuation.resume(returning: .empty)
                     return
                 }
                 let size = (try? FileManager.default.attributesOfItem(atPath: self.url.path)[.size]) as? Int64
                 guard let size, size > 0 else {
+                    // Frames went in but nothing came out — that's a failure, not
+                    // a silent session.
+                    self.logger.error("Recording closed with no data on disk")
                     self.removeFile()
-                    continuation.resume(returning: nil)
+                    continuation.resume(returning: .failed)
                     return
                 }
                 self.logger.info("Recorded \(self.filename, privacy: .public) (\(size) bytes)")
-                continuation.resume(returning: Recorded(filename: self.filename, byteCount: size))
+                continuation.resume(returning: .recorded(Recorded(filename: self.filename, byteCount: size)))
             }
         }
     }

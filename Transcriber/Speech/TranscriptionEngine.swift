@@ -22,6 +22,9 @@ nonisolated struct SessionResult: Sendable {
     let isPartial: Bool
     /// Retained audio, when the user asked for it and the write succeeded.
     let audio: SessionAudioRecorder.Recorded?
+    /// The user asked for audio and it couldn't be written — worth telling them,
+    /// unlike the ordinary "retention is off" case.
+    let audioFailed: Bool
 
     func markedPartial() -> SessionResult {
         SessionResult(text: text,
@@ -29,7 +32,8 @@ nonisolated struct SessionResult: Sendable {
                       localeIdentifier: localeIdentifier,
                       duration: duration,
                       isPartial: true,
-                      audio: audio)
+                      audio: audio,
+                      audioFailed: audioFailed)
     }
 }
 
@@ -70,6 +74,8 @@ final class TranscriptionEngine {
 
     private let microphone = MicrophoneCapture()
     private var recorder: SessionAudioRecorder?
+    /// Set when audio was wanted but the recorder couldn't even be opened.
+    private var recorderUnavailable = false
     private var analyzer: SpeechAnalyzer?
     private var transcriber: SpeechTranscriber?
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
@@ -120,6 +126,7 @@ final class TranscriptionEngine {
         sessionLocaleIdentifier = locale.identifier(.bcp47)
         sessionStartedAt = nil
         streamError = nil
+        recorderUnavailable = false
 
         let (stream, continuation) = AsyncStream.makeStream(of: AnalyzerInput.self)
         inputContinuation = continuation
@@ -155,10 +162,11 @@ final class TranscriptionEngine {
             sessionStartedAt = startedAt
             if retainAudio {
                 // A recorder that can't be opened costs the user their audio,
-                // not their dictation.
+                // not their dictation — but they do get told once.
                 do {
                     recorder = try SessionAudioRecorder(format: format, startedAt: startedAt)
                 } catch {
+                    recorderUnavailable = true
                     logger.error("Audio retention unavailable this session: \(error.localizedDescription, privacy: .public)")
                 }
             }
@@ -189,7 +197,7 @@ final class TranscriptionEngine {
         let duration = sessionStartedAt.map { -$0.timeIntervalSinceNow } ?? 0
         let recorder = self.recorder
         self.recorder = nil
-        let audio = await recorder?.finish()
+        let outcome = await recorder?.finish()
         inputContinuation?.finish()
         inputContinuation = nil
         // Hand ownership to locals before any `await`, so the engine is left in
@@ -207,7 +215,9 @@ final class TranscriptionEngine {
         }
         await resultsTask?.value
 
-        let result = makeResult(duration: duration, isPartial: streamError != nil, audio: audio)
+        let result = makeResult(duration: duration,
+                                isPartial: streamError != nil,
+                                outcome: outcome)
         if let streamError {
             self.streamError = nil
             logger.error("Session finished with a truncated transcript (\(self.committed.count) characters)")
@@ -219,13 +229,28 @@ final class TranscriptionEngine {
 
     private func makeResult(duration: TimeInterval,
                             isPartial: Bool,
-                            audio: SessionAudioRecorder.Recorded?) -> SessionResult {
-        SessionResult(text: committed,
-                      segments: segments,
-                      localeIdentifier: sessionLocaleIdentifier,
-                      duration: duration,
-                      isPartial: isPartial,
-                      audio: audio)
+                            outcome: SessionAudioRecorder.Outcome?) -> SessionResult {
+        var audio: SessionAudioRecorder.Recorded?
+        // An `.empty` recording is only a failure if there was something to
+        // record; a silent session legitimately produces no audio.
+        var failed = recorderUnavailable
+        switch outcome {
+        case .recorded(let recorded):
+            audio = recorded
+        case .failed:
+            failed = true
+        case .empty:
+            failed = failed || !committed.isEmpty
+        case nil:
+            break
+        }
+        return SessionResult(text: committed,
+                             segments: segments,
+                             localeIdentifier: sessionLocaleIdentifier,
+                             duration: duration,
+                             isPartial: isPartial,
+                             audio: audio,
+                             audioFailed: failed)
     }
 
     /// Drops a finished session's audio — a silent dictation isn't worth keeping

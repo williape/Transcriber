@@ -48,6 +48,20 @@ struct HistoryActions {
     /// new transcript.
     var retranscribe: (HistoryEntry, Locale, Bool) async throws -> String
 
+    /// Live progress of whatever the app is doing, read from `AppState` — the
+    /// same source the menu bar icon and the dictation panel use, rather than a
+    /// second progress channel that could disagree with them. Read from a view
+    /// body so Observation picks up the dependency.
+    var currentProgress: () -> TranscriptionProgress?
+
     static let noop = HistoryActions(insert: { _ in .copiedToClipboard },
-                                     retranscribe: { _, _, _ in "" })
+                                     retranscribe: { _, _, _ in "" },
+                                     currentProgress: { nil })
+}
+
+/// A step the user is waiting on, labelled so a model download doesn't look like
+/// a stalled transcription.
+struct TranscriptionProgress {
+    let label: String
+    let fraction: Double
 }

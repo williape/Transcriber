@@ -52,6 +52,7 @@ struct HistoryDetailView: View {
                               run: { locale, replace in
                                   try await actions.retranscribe(entry, locale, replace)
                               },
+                              progress: actions.currentProgress,
                               onFinished: {
                                   feedback = "Transcribed again"
                                   playback.load(filename: entry.audioFilename)

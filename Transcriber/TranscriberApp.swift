@@ -42,6 +42,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// The app that was frontmost when recording started — which, because the
     /// panel never activates, is still the insertion target when it ends.
     private var sessionTargetApp: (bundleID: String?, name: String?)?
+    /// Keeps the "couldn't save audio" alert to once per app run.
+    private var hasWarnedAboutAudioFailure = false
     /// Bumped for every dictation/file operation so progress ticks that arrive
     /// late (see `progressSink`) can tell they belong to a finished operation.
     private var operationGeneration = 0
@@ -136,10 +138,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 retranscribe: { [weak self] entry, locale, replace in
                     guard let self else { return "" }
                     return try await retranscribe(entry, locale: locale, replace: replace)
+                },
+                currentProgress: { [weak self] in
+                    self?.currentProgress()
                 })
             historyWindowController = HistoryWindowController(store: historyStore, actions: actions)
         }
         historyWindowController?.show()
+    }
+
+    /// The current long-running step, if any, taken straight from `AppState` so
+    /// the History window can't disagree with the menu bar icon.
+    private func currentProgress() -> TranscriptionProgress? {
+        switch appState.session {
+        case .downloadingModel(let fraction):
+            return TranscriptionProgress(label: "Downloading the language model…",
+                                         fraction: fraction)
+        case .transcribingFile(let fraction):
+            return TranscriptionProgress(label: "Transcribing…", fraction: fraction)
+        default:
+            return nil
+        }
     }
 
     /// Newest entries for the menu bar submenu, as plain values — `@Model`
@@ -494,6 +513,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         logger.info("Delivery outcome: \(String(describing: outcome), privacy: .public)")
         // After delivery, so the archived outcome is the real one.
         recordHistory(result, outcome: outcome)
+        if result.audioFailed {
+            warnAboutAudioFailureOnce()
+        }
+    }
+
+    /// Told once per app run: the transcript survived, the recording didn't.
+    /// Silence would mean the user only discovers the loss when they go looking
+    /// for a recording that was never written.
+    private func warnAboutAudioFailureOnce() {
+        guard !hasWarnedAboutAudioFailure else { return }
+        hasWarnedAboutAudioFailure = true
+        logger.error("Audio retention failed; warning the user")
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Couldn't save the audio recording"
+        alert.informativeText = """
+        The transcript was kept, but Transcriber couldn't write this dictation's \
+        audio — the disk may be full. It will try again next time; this message \
+        won't repeat until you restart Transcriber.
+        """
+        alert.alertStyle = .warning
+        alert.runModal()
     }
 
     private func recordHistory(_ result: SessionResult, outcome: OutputRouter.Outcome?) {

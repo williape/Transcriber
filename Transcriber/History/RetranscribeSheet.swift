@@ -12,6 +12,8 @@ struct RetranscribeSheet: View {
     let originalLocaleIdentifier: String
     /// Runs the transcription. Returns the new text, or throws.
     let run: (_ locale: Locale, _ replace: Bool) async throws -> String
+    /// Live progress from `AppState`; read during `body` so Observation tracks it.
+    let progress: () -> TranscriptionProgress?
     let onFinished: () -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -19,15 +21,13 @@ struct RetranscribeSheet: View {
     @State private var localeIdentifier = ""
     @State private var replace = true
     @State private var locales: [LocaleOption] = []
-    @State private var progress: Double?
+    @State private var isRunning = false
     @State private var errorMessage: String?
 
     private struct LocaleOption: Identifiable {
         let id: String
         let name: String
     }
-
-    private var isRunning: Bool { progress != nil }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -51,8 +51,19 @@ struct RetranscribeSheet: View {
             }
 
             if isRunning {
-                ProgressView(value: progress ?? 0)
+                // A short recording can finish before any progress arrives, and
+                // an unlabelled bar at zero reads as "stuck" — so fall back to a
+                // spinner until there's a real fraction to show.
+                if let progress = progress() {
+                    ProgressView(value: progress.fraction) {
+                        Text(progress.label)
+                            .font(.caption)
+                    }
                     .progressViewStyle(.linear)
+                } else {
+                    ProgressView()
+                        .progressViewStyle(.linear)
+                }
             }
 
             if let errorMessage {
@@ -99,7 +110,7 @@ struct RetranscribeSheet: View {
 
     private func start() {
         errorMessage = nil
-        progress = 0
+        isRunning = true
         let locale = Locale(identifier: localeIdentifier)
         let replace = replace
         Task {
@@ -109,7 +120,7 @@ struct RetranscribeSheet: View {
                 dismiss()
             } catch {
                 errorMessage = error.localizedDescription
-                progress = nil
+                isRunning = false
             }
         }
     }
