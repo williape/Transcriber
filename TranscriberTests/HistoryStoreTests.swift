@@ -220,6 +220,43 @@ struct HistoryStoreTests {
         #expect(FileManager.default.fileExists(atPath: legacy.appending(path: "History.store-wal").path))
     }
 
+    // MARK: - Migration and verification together
+
+    /// The real startup sequence, on the case that matters: `migrate` must not
+    /// deliver a lone log to the new location behind the guard's back, and the
+    /// guard must then leave it alone because there's no store for it.
+    @Test func migrateThenVerifyLeavesALoneLogWhereItIs() throws {
+        let (legacy, destination) = try legacyAndDestination(withMigratedStore: false)
+        defer {
+            try? FileManager.default.removeItem(at: legacy)
+            try? FileManager.default.removeItem(at: destination)
+        }
+        try Data("wal".utf8).write(to: legacy.appending(path: "History.store-wal"))
+
+        try AppDirectories.migrate(from: legacy, to: destination)
+        try HistoryStore.verifyStoreMigrated(in: legacy, to: destination)
+
+        #expect(FileManager.default.fileExists(atPath: legacy.appending(path: "History.store-wal").path))
+        #expect(FileManager.default.fileExists(atPath: destination.appending(path: "History.store-wal").path) == false)
+    }
+
+    /// And on the case where reuniting them is right: the store moved in an
+    /// earlier run, its log didn't.
+    @Test func migrateThenVerifyReunitesALogWithItsMigratedStore() throws {
+        let (legacy, destination) = try legacyAndDestination()
+        defer {
+            try? FileManager.default.removeItem(at: legacy)
+            try? FileManager.default.removeItem(at: destination)
+        }
+        try Data("wal".utf8).write(to: legacy.appending(path: "History.store-wal"))
+
+        try AppDirectories.migrate(from: legacy, to: destination)
+        try HistoryStore.verifyStoreMigrated(in: legacy, to: destination)
+
+        #expect(FileManager.default.fileExists(atPath: destination.appending(path: "History.store-wal").path))
+        #expect(FileManager.default.fileExists(atPath: legacy.appending(path: "History.store-wal").path) == false)
+    }
+
     /// An `-shm` is a shared-memory index over the `-wal` — derived state, so a
     /// stray one is noise and must not hold history back.
     @Test func aStraySharedMemoryIndexIsDiscarded() throws {

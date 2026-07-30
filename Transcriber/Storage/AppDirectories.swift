@@ -121,14 +121,28 @@ nonisolated enum AppDirectories {
 
     /// Groups a directory listing so each store travels with its own sidecars.
     /// Every other name is a family of one.
+    ///
+    /// A sidecar whose store *isn't* here is left out altogether. It can't be
+    /// migrated as an ordinary file: at the destination it would look like the
+    /// log of whichever store ends up there, which is a database it has nothing
+    /// to do with. Deciding what to do with one belongs to whoever owns that
+    /// store — see `HistoryStore.verifyStoreMigrated`.
     private static func families(in names: [String]) -> [[String]] {
         let all = Set(names)
         var families: [[String]] = []
+        var orphanedSidecars: [String] = []
         for name in names.sorted() {
-            // A `-wal` is only a sidecar when its store is here too; on its own
-            // it's just a file with an odd name, and moves like any other.
-            if let base = sidecarBase(of: name), all.contains(base) { continue }
+            if let base = sidecarBase(of: name) {
+                if !all.contains(base) {
+                    orphanedSidecars.append(name)
+                }
+                // Otherwise it travels as part of its store's family, below.
+                continue
+            }
             families.append([name] + sidecarSuffixes.map { name + $0 }.filter(all.contains))
+        }
+        if !orphanedSidecars.isEmpty {
+            logger.error("Not migrating \(orphanedSidecars.joined(separator: ", "), privacy: .public): no store to travel with")
         }
         return families
     }

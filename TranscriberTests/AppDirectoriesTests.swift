@@ -220,8 +220,10 @@ struct AppDirectoriesTests {
         #expect(FileManager.default.fileExists(atPath: destination.appending(path: "History.store").path) == false)
     }
 
-    /// A `-wal` with no store beside it is just a file with an odd name.
-    @Test func anOrphanedSidecarMigratesOnItsOwn() throws {
+    /// A `-wal` with no store beside it stays where it is. Moved on its own it
+    /// would sit at the destination looking like the log of whatever store ends up
+    /// there — a database it has nothing to do with.
+    @Test func anOrphanedSidecarStaysBehind() throws {
         let legacy = temporaryURL()
         let destination = temporaryURL()
         defer {
@@ -231,10 +233,15 @@ struct AppDirectoriesTests {
 
         try AppDirectories.ensure(legacy)
         try write("stray", to: legacy.appending(path: "History.store-wal"))
+        try write("keep me", to: legacy.appending(path: "notes.txt"))
 
         let moved = try AppDirectories.migrate(from: legacy, to: destination)
 
-        #expect(moved == ["History.store-wal"])
+        #expect(moved == ["notes.txt"])
+        #expect(FileManager.default.fileExists(atPath: legacy.appending(path: "History.store-wal").path))
+        #expect(FileManager.default.fileExists(atPath: destination.appending(path: "History.store-wal").path) == false)
+        // Something's still in there, so the old folder isn't tidied away.
+        #expect(FileManager.default.fileExists(atPath: legacy.path))
     }
 
     @Test func migrationIsANoOpWithoutAnOldFolder() throws {
