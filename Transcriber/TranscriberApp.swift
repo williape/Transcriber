@@ -4,6 +4,7 @@
 //
 
 import AppKit
+import Carbon.HIToolbox
 import UniformTypeIdentifiers
 import os
 
@@ -86,6 +87,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItemController.onCopyLastTranscript = { [weak self] in
             self?.copyLastTranscript()
         }
+        statusItemController.onTogglePauseHistory = { [weak self] in
+            self?.togglePauseHistory()
+        }
+        statusItemController.isHistoryPaused = {
+            Preferences.shared.historyPaused
+        }
         panelController.onEscape = { [weak self] in
             self?.cancelDictation()
         }
@@ -105,6 +112,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let store = try HistoryStore()
             historyStore = store
             logger.info("History: \(store.entryCount()) entries")
+            // Housekeeping at launch: drop expired entries, get back under the
+            // audio cap, and settle any disagreement between the store and the
+            // recordings folder.
+            store.reconcileRecordings()
+            store.prune()
         } catch {
             // History is a convenience; dictation must not depend on it.
             logger.error("History unavailable: \(error.localizedDescription, privacy: .public)")
@@ -117,11 +129,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         if historyWindowController == nil {
-            let actions = HistoryActions(insert: { [weak self] text in
-                await self?.reinsertAndReport(text) ?? .copiedToClipboard
-            })
-            historyWindowController = HistoryWindowController(container: historyStore.container,
-                                                              actions: actions)
+            let actions = HistoryActions(
+                insert: { [weak self] text in
+                    await self?.reinsertAndReport(text) ?? .copiedToClipboard
+                },
+                retranscribe: { [weak self] entry, locale, replace in
+                    guard let self else { return "" }
+                    return try await retranscribe(entry, locale: locale, replace: replace)
+                })
+            historyWindowController = HistoryWindowController(store: historyStore, actions: actions)
         }
         historyWindowController?.show()
     }
@@ -156,6 +172,81 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
         logger.info("Copied last transcript (\(text.count) characters)")
+    }
+
+    /// Re-runs transcription on an entry's retained audio.
+    ///
+    /// Uses the same `FileTranscriber` as a dropped file, and the same busy
+    /// gating: it refuses while a dictation or another transcription is running,
+    /// rather than competing for the analyzer.
+    private func retranscribe(_ entry: HistoryEntry,
+                              locale: Locale,
+                              replace: Bool) async throws -> String {
+        guard let historyStore else { throw RetranscribeError.historyUnavailable }
+        guard let filename = entry.audioFilename else { throw RetranscribeError.noAudio }
+        guard appState.session == .idle, sessionTask == nil else {
+            throw RetranscribeError.busy
+        }
+
+        operationGeneration += 1
+        let generation = operationGeneration
+        appState.transition(to: .transcribingFile(progress: 0))
+        defer {
+            operationGeneration += 1
+            appState.transition(to: .idle)
+        }
+
+        let text = try await fileTranscriber.transcribe(
+            url: RecordingsDirectory.url(for: filename),
+            locale: locale,
+            modelDownloadProgress: progressSink(.modelDownload, generation: generation),
+            onProgress: progressSink(.fileTranscription, generation: generation))
+
+        historyStore.applyRetranscription(text,
+                                          locale: locale,
+                                          to: entry,
+                                          replace: replace)
+        return text
+    }
+
+    enum RetranscribeError: LocalizedError {
+        case busy
+        case noAudio
+        case historyUnavailable
+
+        var errorDescription: String? {
+            switch self {
+            case .busy:
+                return "Transcriber is busy. Wait for the current dictation or transcription to finish, then try again."
+            case .noAudio:
+                return "This entry has no retained audio to transcribe."
+            case .historyUnavailable:
+                return "The history store isn't available."
+            }
+        }
+    }
+
+    private func makeHistoryAdmin() -> HistoryAdmin {
+        HistoryAdmin(
+            storage: { [weak self] in
+                HistoryAdmin.Storage(entryCount: self?.historyStore?.entryCount() ?? 0,
+                                     audioBytes: RecordingsDirectory.totalBytes())
+            },
+            prune: { [weak self] in
+                self?.historyStore?.prune()
+            },
+            deleteAll: { [weak self] in
+                self?.historyStore?.deleteAll()
+            },
+            export: { [weak self] url in
+                guard let self, let historyStore else { return }
+                do {
+                    let count = try historyStore.export(to: url)
+                    logger.info("Exported \(count) entries")
+                } catch {
+                    presentError(error)
+                }
+            })
     }
 
     private func presentHistoryUnavailable() {
@@ -330,6 +421,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             do {
                 try await engine.startSession(
                     locale: Preferences.shared.selectedLocale,
+                    retainAudio: shouldRetainAudio(),
                     modelDownloadProgress: progressSink(.modelDownload, generation: generation))
                 operationGeneration += 1
                 appState.transition(to: .recording)
@@ -368,10 +460,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Whether this session's audio should be kept.
+    ///
+    /// Secure input means a password field is focused. Recording that is exactly
+    /// the thing a dictation tool must not do, so it overrides the preference.
+    private func shouldRetainAudio() -> Bool {
+        let preferences = Preferences.shared
+        guard preferences.keepsTranscriptHistory,
+              preferences.keepsAudioRecordings,
+              !preferences.historyPaused else { return false }
+        if IsSecureEventInputEnabled() {
+            logger.info("Secure input active; not retaining audio for this session")
+            return false
+        }
+        return true
+    }
+
     private func deliver(_ result: SessionResult) async {
         guard !result.text.isEmpty else {
             // Hold the panel briefly so the user learns why nothing was inserted.
-            // Nothing was said, so nothing is worth archiving either.
+            // Nothing was said, so neither the transcript nor the audio is worth
+            // keeping.
+            if let audio = result.audio {
+                engine.discardRecording(audio)
+            }
             appState.showNotice("No speech detected")
             try? await Task.sleep(for: .seconds(1.5))
             return
@@ -385,7 +497,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func recordHistory(_ result: SessionResult, outcome: OutputRouter.Outcome?) {
-        guard let historyStore, historyStore.isRecordingEnabled else { return }
+        guard let historyStore else { return }
+        guard historyStore.isRecordingEnabled else {
+            // History was switched off (or paused) mid-session — the recording
+            // shouldn't outlive the entry that would have referenced it.
+            if let audio = result.audio {
+                engine.discardRecording(audio)
+            }
+            return
+        }
         let draft = HistoryDraft(text: result.text,
                                  localeIdentifier: result.localeIdentifier,
                                  duration: result.duration,
@@ -393,8 +513,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                  targetAppBundleID: sessionTargetApp?.bundleID,
                                  targetAppName: sessionTargetApp?.name,
                                  deliveryOutcomeRaw: outcome?.rawValue,
+                                 audioFilename: result.audio?.filename,
+                                 audioByteCount: result.audio?.byteCount,
                                  segments: result.segments)
         historyStore.record(draft)
+        // Keeping to the size cap is cheapest right after the thing that grew it.
+        if result.audio != nil {
+            historyStore.prune()
+        }
+    }
+
+    private func togglePauseHistory() {
+        Preferences.shared.historyPaused.toggle()
+        logger.info("History paused: \(Preferences.shared.historyPaused)")
     }
 
     private func cancelDictation() {
@@ -421,7 +552,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if settingsWindowController == nil {
             settingsWindowController = SettingsWindowController(
                 rebinder: makeShortcutRebinder(),
-                onOpenHistory: { [weak self] in self?.openHistory() })
+                onOpenHistory: { [weak self] in self?.openHistory() },
+                historyAdmin: makeHistoryAdmin())
         }
         settingsWindowController?.show()
     }

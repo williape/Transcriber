@@ -20,13 +20,16 @@ nonisolated struct SessionResult: Sendable {
     let localeIdentifier: String
     let duration: TimeInterval
     let isPartial: Bool
+    /// Retained audio, when the user asked for it and the write succeeded.
+    let audio: SessionAudioRecorder.Recorded?
 
     func markedPartial() -> SessionResult {
         SessionResult(text: text,
                       segments: segments,
                       localeIdentifier: localeIdentifier,
                       duration: duration,
-                      isPartial: true)
+                      isPartial: true,
+                      audio: audio)
     }
 }
 
@@ -66,6 +69,7 @@ final class TranscriptionEngine {
     var onLevel: ((Double) -> Void)?
 
     private let microphone = MicrophoneCapture()
+    private var recorder: SessionAudioRecorder?
     private var analyzer: SpeechAnalyzer?
     private var transcriber: SpeechTranscriber?
     private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
@@ -83,6 +87,7 @@ final class TranscriptionEngine {
 
     /// Prepares (permission, model) and starts the streaming session.
     func startSession(locale requestedLocale: Locale,
+                      retainAudio: Bool,
                       modelDownloadProgress: @escaping @Sendable (Double) -> Void) async throws {
         guard analyzer == nil, resultsTask == nil else {
             throw EngineError.sessionAlreadyRunning
@@ -146,7 +151,18 @@ final class TranscriptionEngine {
             try await analyzer.start(inputSequence: stream)
             // Timed from when audio actually starts flowing, so a slow model
             // download doesn't inflate the recorded duration.
-            sessionStartedAt = Date()
+            let startedAt = Date()
+            sessionStartedAt = startedAt
+            if retainAudio {
+                // A recorder that can't be opened costs the user their audio,
+                // not their dictation.
+                do {
+                    recorder = try SessionAudioRecorder(format: format, startedAt: startedAt)
+                } catch {
+                    logger.error("Audio retention unavailable this session: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+            let recorder = self.recorder
             try microphone.start(targetFormat: format, onLevel: { [weak self] level in
                 guard let self else { return }
                 Task { @MainActor in
@@ -154,6 +170,7 @@ final class TranscriptionEngine {
                 }
             }, onBuffer: { buffer in
                 continuation.yield(AnalyzerInput(buffer: buffer))
+                recorder?.append(buffer)
             })
         } catch {
             await cancelSession()
@@ -170,6 +187,9 @@ final class TranscriptionEngine {
         // Capture the span now: the mic has just stopped, so this is the end of
         // the audio, and the finalize/await below can take a while.
         let duration = sessionStartedAt.map { -$0.timeIntervalSinceNow } ?? 0
+        let recorder = self.recorder
+        self.recorder = nil
+        let audio = await recorder?.finish()
         inputContinuation?.finish()
         inputContinuation = nil
         // Hand ownership to locals before any `await`, so the engine is left in
@@ -187,7 +207,7 @@ final class TranscriptionEngine {
         }
         await resultsTask?.value
 
-        let result = makeResult(duration: duration, isPartial: streamError != nil)
+        let result = makeResult(duration: duration, isPartial: streamError != nil, audio: audio)
         if let streamError {
             self.streamError = nil
             logger.error("Session finished with a truncated transcript (\(self.committed.count) characters)")
@@ -197,12 +217,21 @@ final class TranscriptionEngine {
         return result
     }
 
-    private func makeResult(duration: TimeInterval, isPartial: Bool) -> SessionResult {
+    private func makeResult(duration: TimeInterval,
+                            isPartial: Bool,
+                            audio: SessionAudioRecorder.Recorded?) -> SessionResult {
         SessionResult(text: committed,
                       segments: segments,
                       localeIdentifier: sessionLocaleIdentifier,
                       duration: duration,
-                      isPartial: isPartial)
+                      isPartial: isPartial,
+                      audio: audio)
+    }
+
+    /// Drops a finished session's audio — a silent dictation isn't worth keeping
+    /// a recording of.
+    func discardRecording(_ audio: SessionAudioRecorder.Recorded) {
+        RecordingsDirectory.delete(filename: audio.filename)
     }
 
     /// Records a committed span against the analyzer's timeline. Ranges can be
@@ -219,6 +248,9 @@ final class TranscriptionEngine {
     /// half-started or already-finished session.
     func cancelSession() async {
         microphone.stop()
+        let recorder = self.recorder
+        self.recorder = nil
+        await recorder?.discard()
         inputContinuation?.finish()
         inputContinuation = nil
         let analyzer = self.analyzer

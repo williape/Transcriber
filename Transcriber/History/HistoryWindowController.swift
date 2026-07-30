@@ -13,9 +13,9 @@ import SwiftUI
 /// focus, which the dictation panel is built never to take.
 @MainActor
 final class HistoryWindowController: NSWindowController {
-    convenience init(container: ModelContainer, actions: HistoryActions) {
-        let root = HistoryListView(actions: actions)
-            .modelContainer(container)
+    convenience init(store: HistoryStore, actions: HistoryActions) {
+        let root = HistoryListView(actions: actions, store: store)
+            .modelContainer(store.container)
         let window = NSWindow(contentViewController: NSHostingController(rootView: root))
         window.title = "Transcription History"
         window.styleMask = [.titled, .closable, .resizable, .miniaturizable]
@@ -43,5 +43,11 @@ struct HistoryActions {
     /// insertion-mode preference. Returns what actually happened.
     var insert: (String) async -> OutputRouter.Outcome
 
-    static let noop = HistoryActions(insert: { _ in .copiedToClipboard })
+    /// Re-runs transcription on an entry's retained audio, either replacing its
+    /// text or saving a new entry (with its own copy of the audio). Returns the
+    /// new transcript.
+    var retranscribe: (HistoryEntry, Locale, Bool) async throws -> String
+
+    static let noop = HistoryActions(insert: { _ in .copiedToClipboard },
+                                     retranscribe: { _, _, _ in "" })
 }

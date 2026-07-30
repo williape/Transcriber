@@ -24,12 +24,16 @@ final class StatusItemController: NSObject {
     var onOpenHistory: (() -> Void)?
     var onInsertTranscript: ((String) -> Void)?
     var onCopyLastTranscript: (() -> Void)?
+    var onTogglePauseHistory: (() -> Void)?
     /// Asked for fresh entries each time the submenu opens.
     var recentTranscripts: (() -> [RecentTranscript])?
+    /// Read when the menu opens, to show the pause state.
+    var isHistoryPaused: (() -> Bool)?
 
     private let appState: AppState
     private let statusItem: NSStatusItem
     private let dictationItem: NSMenuItem
+    private let pauseHistoryItem: NSMenuItem
     private let recentMenu = NSMenu()
     private let logger = Logger(subsystem: "com.pwilliams.Transcriber", category: "StatusItem")
 
@@ -37,6 +41,7 @@ final class StatusItemController: NSObject {
         self.appState = appState
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         self.dictationItem = NSMenuItem(title: "Start Dictation", action: nil, keyEquivalent: "")
+        self.pauseHistoryItem = NSMenuItem(title: "Pause History", action: nil, keyEquivalent: "")
         super.init()
 
         buildMenu()
@@ -86,6 +91,10 @@ final class StatusItemController: NSObject {
         copyLastItem.target = self
         menu.addItem(copyLastItem)
 
+        pauseHistoryItem.target = self
+        pauseHistoryItem.action = #selector(togglePauseHistory)
+        menu.addItem(pauseHistoryItem)
+
         menu.addItem(.separator())
 
         let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
@@ -99,6 +108,7 @@ final class StatusItemController: NSObject {
                                   keyEquivalent: "q")
         menu.addItem(quitItem)
 
+        menu.delegate = self
         statusItem.menu = menu
     }
 
@@ -162,6 +172,10 @@ final class StatusItemController: NSObject {
         onCopyLastTranscript?()
     }
 
+    @objc private func togglePauseHistory() {
+        onTogglePauseHistory?()
+    }
+
     @objc private func insertRecentTranscript(_ sender: NSMenuItem) {
         guard let text = sender.representedObject as? String else { return }
         onInsertTranscript?(text)
@@ -172,7 +186,11 @@ extension StatusItemController: NSMenuDelegate {
     /// Rebuilt on every open rather than kept in sync — the list is short and
     /// the menu is the only thing that reads it.
     func menuNeedsUpdate(_ menu: NSMenu) {
-        guard menu === recentMenu else { return }
+        guard menu === recentMenu else {
+            // The main menu: refresh the pause state as it opens.
+            pauseHistoryItem.state = (isHistoryPaused?() ?? false) ? .on : .off
+            return
+        }
         menu.removeAllItems()
         let recents = recentTranscripts?() ?? []
         guard !recents.isEmpty else {

@@ -174,12 +174,12 @@ App is **not** sandboxed (`ENABLE_APP_SANDBOX = NO`), so these are real paths, n
 ~/Documents/Transcriber/          (mode 0700)
 ├── History.store                 // SwiftData (+ -wal, -shm)
 └── Recordings/
-    ├── 7C4F…-A19B.m4a            // <entry UUID>.m4a
+    ├── 2026-07-30 10-45-12.m4a    // one per dictation, local wall-clock time
     └── …
 ```
 
 - Directory created lazily on first write, with `POSIXPermissions: 0o700`.
-- Filenames are entry UUIDs — no timestamp collisions, no transcript text leaking into filenames visible to any process that can list the directory.
+- **Filenames are timestamps** (`yyyy-MM-dd HH-mm-ss`), at the user's request (2026-07-30) in place of the original entry-UUID scheme: the folder is theirs to browse, and UUIDs made it unreadable. Names sort chronologically, carry no transcript text, and are claimed with `O_EXCL` rather than check-then-create, so two recordings in the same second get a Finder-style ` (2)` instead of one overwriting the other. The scheme isn't load-bearing — each entry stores the filename it was actually given, so a rename or a future scheme change orphans nothing.
 - **`~/Documents/Transcriber` at the user's request** (2026-07-30), replacing the original `~/Library/Application Support/<bundle id>`. Their reasoning wins over the earlier draft's: this is *their* dictation, and they want to see, back up and prune it without an app mediating. `AppDirectories.migrate(from:to:)` moved the existing store on first launch of the new build and removes the old folder once empty; it never overwrites a file already at the destination.
 - **The trade this accepts:** `~/Documents` is more exposed than Application Support. If System Settings ▸ iCloud ▸ "Desktop & Documents Folders" is ever switched on, `~/Documents` is redirected into iCloud Drive and every transcript and recording leaves the Mac — which would quietly break the app's on-device promise. `AppDirectories.rootIsCloudSynced` detects the redirect and logs it; if audio retention (M3) lands while it's true, that deserves a visible warning in Settings, not just a log line. (Verified off for this user on 2026-07-30: `~/Documents` resolves to a local path.)
 - `Recordings/` gets `.metadata_never_index` so Spotlight doesn't index the audio — worth more here than it was under Application Support.
@@ -398,6 +398,13 @@ Each milestone ends buildable and manually verifiable, matching the plan's conve
 | **M3** | `SessionAudioRecorder`, retention toggle, `.m4a` writing, playback (F4.1–F4.3), Save Audio | Record, play back, verify duration and size |
 | **M4** | Retention policy: age expiry, size cap, pruning, reconciliation, storage readout, Delete All, Export; Pause History; secure-input skip; **Pin** UI (F6.9) — deliberately here rather than M2, so the control ships in the same milestone as the pruning it protects against | Cap/expiry manual checks above |
 | **M5** | Re-transcribe (F5); segment-driven seek/highlight (F4.4) if it stays cheap | Re-transcribe in a second locale |
+
+**Deviations recorded during implementation (2026-07-30):**
+
+- **F4.4 landed as highlighting only.** The sentence being played is highlighted from the stored segment ranges, which are already sample-aligned with the recording. Per-word *click-to-seek* was dropped: SwiftUI `Text` offers no per-run hit testing, so it needs either a custom flow `Layout` or a fake-link-URL trick, and the scrubber already covers navigation. Worth revisiting only if reviewing long dictations becomes a real workflow.
+- **A re-transcription saved as a new entry copies the audio.** Sharing one file between two entries would mean deleting either strands the other; a dictation's `.m4a` is small enough that a copy is the cheaper correctness story.
+- **Segments are cleared on re-transcription.** `FileTranscriber` doesn't report ranges, and keeping the old ones would highlight the wrong words during playback.
+- **`SessionAudioRecorder`, `RecordingsDirectory` and `AppDirectories` are explicitly `nonisolated`.** The target builds with `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`, which would otherwise make the recorder main-actor isolated — exactly wrong for a type the audio render thread calls into.
 
 Housekeeping in the same phase: add Phase 8 to `IMPLEMENTATION_PLAN.md` (§4 and the §7 checklist), and add to `CLAUDE.md` the new architecture entries plus any gotchas found (expect at least one about AAC writing or SwiftData container setup).
 

@@ -9,6 +9,7 @@ import SwiftUI
 
 struct HistoryListView: View {
     let actions: HistoryActions
+    let store: HistoryStore
 
     @Environment(\.modelContext) private var context
     @Query(sort: \HistoryEntry.createdAt, order: .reverse) private var entries: [HistoryEntry]
@@ -47,6 +48,7 @@ struct HistoryListView: View {
                             .tag(entry.persistentModelID)
                             .contextMenu {
                                 Button("Copy") { copy(entry.text) }
+                                Button(entry.isPinned ? "Unpin" : "Pin") { togglePin(entry) }
                                 Button("Delete", role: .destructive) { delete([entry]) }
                             }
                     }
@@ -81,7 +83,9 @@ struct HistoryListView: View {
         if let entry = selectedEntry {
             HistoryDetailView(entry: entry,
                               actions: actions,
-                              onDelete: { delete([entry]) })
+                              onDelete: { delete([entry]) },
+                              onDeleteAudio: { store.deleteAudio(of: entry) },
+                              onTogglePin: { togglePin(entry) })
         } else if selection.count > 1 {
             multipleSelection
         } else {
@@ -156,8 +160,14 @@ struct HistoryListView: View {
     private func delete(_ doomed: [HistoryEntry]) {
         for entry in doomed {
             selection.remove(entry.persistentModelID)
-            context.delete(entry)
         }
+        // Through the store, so the entry's recording goes with it.
+        store.delete(doomed)
+    }
+
+    /// Pinned entries survive the age limit and the audio size cap.
+    private func togglePin(_ entry: HistoryEntry) {
+        entry.isPinned.toggle()
         try? context.save()
     }
 }
@@ -219,6 +229,10 @@ private struct HistoryRowView: View {
                     if entry.audioFilename != nil {
                         Image(systemName: "waveform")
                             .help("Audio recording kept")
+                    }
+                    if entry.isPinned {
+                        Image(systemName: "pin.fill")
+                            .help("Pinned — never deleted automatically")
                     }
                     Spacer(minLength: 4)
                     Text(HistoryFormat.duration(entry.duration))

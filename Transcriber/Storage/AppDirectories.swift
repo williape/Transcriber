@@ -16,7 +16,7 @@ import os
 /// The app is intentionally unsandboxed, so these are real paths. If the sandbox
 /// were ever switched on, `~/Documents` would become a container path and the
 /// data would need moving again.
-enum AppDirectories {
+nonisolated enum AppDirectories {
     private static let logger = Logger(subsystem: "com.pwilliams.Transcriber", category: "Storage")
 
     /// `~/Documents/Transcriber`

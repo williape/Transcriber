@@ -20,6 +20,15 @@ final class Preferences {
         static let playsSounds = "playsSounds"
         static let localeIdentifier = "localeIdentifier"
         static let keepsTranscriptHistory = "keepsTranscriptHistory"
+        static let keepsAudioRecordings = "keepsAudioRecordings"
+        static let historyRetentionDays = "historyRetentionDays"
+        static let audioStorageCapBytes = "audioStorageCapBytes"
+    }
+
+    /// Byte caps offered in Settings. 0 means "no limit".
+    enum AudioCap {
+        static let noLimit = 0
+        static let oneGigabyte = 1_073_741_824
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -30,7 +39,31 @@ final class Preferences {
             Key.insertionMode: OutputRouter.InsertionMode.paste.rawValue,
             Key.playsSounds: true,
             Key.keepsTranscriptHistory: true,
+            // Audio is the sensitive, bulky part: opt-in, and capped by default
+            // once it is on.
+            Key.keepsAudioRecordings: false,
+            Key.historyRetentionDays: 0,
+            Key.audioStorageCapBytes: AudioCap.oneGigabyte,
         ])
+    }
+
+    /// Whether each dictation's audio is written alongside its transcript.
+    var keepsAudioRecordings: Bool {
+        get { defaults.bool(forKey: Key.keepsAudioRecordings) }
+        set { defaults.set(newValue, forKey: Key.keepsAudioRecordings) }
+    }
+
+    /// Entries older than this are deleted automatically. 0 = never.
+    var historyRetentionDays: Int {
+        get { defaults.integer(forKey: Key.historyRetentionDays) }
+        set { defaults.set(newValue, forKey: Key.historyRetentionDays) }
+    }
+
+    /// Ceiling on total retained audio; oldest audio is reclaimed first and the
+    /// transcripts are kept. 0 = no limit.
+    var audioStorageCapBytes: Int {
+        get { defaults.integer(forKey: Key.audioStorageCapBytes) }
+        set { defaults.set(newValue, forKey: Key.audioStorageCapBytes) }
     }
 
     /// Whether finished dictations are archived to the history store.

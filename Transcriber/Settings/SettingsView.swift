@@ -12,12 +12,20 @@ import SwiftUI
 struct SettingsView: View {
     let rebinder: ShortcutRebinder
     let onOpenHistory: () -> Void
+    /// Settings owns the destructive history actions; the store itself lives in
+    /// the app delegate.
+    let historyAdmin: HistoryAdmin
 
     // Same UserDefaults keys Preferences uses.
     @AppStorage("insertionMode") private var insertionMode = OutputRouter.InsertionMode.paste.rawValue
     @AppStorage("playsSounds") private var playsSounds = true
     @AppStorage("localeIdentifier") private var localeIdentifier = ""
     @AppStorage("keepsTranscriptHistory") private var keepsTranscriptHistory = true
+    @AppStorage("keepsAudioRecordings") private var keepsAudioRecordings = false
+    @AppStorage("historyRetentionDays") private var historyRetentionDays = 0
+    @AppStorage("audioStorageCapBytes") private var audioStorageCapBytes = 1_073_741_824
+    @State private var confirmingDeleteAll = false
+    @State private var storage = HistoryAdmin.Storage(entryCount: 0, audioBytes: 0)
     @State private var accessibilityTrusted = AXIsProcessTrusted()
     @State private var localeOptions: [LocaleOption] = []
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
@@ -59,12 +67,41 @@ struct SettingsView: View {
             LabeledContent("History") {
                 VStack(alignment: .leading, spacing: 8) {
                     Toggle("Keep finished dictations", isOn: $keepsTranscriptHistory)
+                    Toggle("Also keep the audio recording (about 11 MB per hour)",
+                           isOn: $keepsAudioRecordings)
+                        .disabled(!keepsTranscriptHistory)
+
+                    Picker("Delete after", selection: $historyRetentionDays) {
+                        Text("Never").tag(0)
+                        Text("7 days").tag(7)
+                        Text("30 days").tag(30)
+                        Text("90 days").tag(90)
+                        Text("1 year").tag(365)
+                    }
+                    .disabled(!keepsTranscriptHistory)
+
+                    Picker("Limit audio to", selection: $audioStorageCapBytes) {
+                        Text("No limit").tag(0)
+                        Text("500 MB").tag(524_288_000)
+                        Text("1 GB").tag(1_073_741_824)
+                        Text("5 GB").tag(5_368_709_120)
+                    }
+                    .disabled(!keepsTranscriptHistory || !keepsAudioRecordings)
+
+                    Text(storageSummary)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+
                     HStack {
                         Button("Open History…") {
                             onOpenHistory()
                         }
                         Button("Reveal Folder") {
                             revealStorageFolder()
+                        }
+                        Button("Export…", action: exportHistory)
+                        Button("Delete All…") {
+                            confirmingDeleteAll = true
                         }
                     }
                 }
@@ -99,15 +136,52 @@ struct SettingsView: View {
             }
         }
         .padding(20)
-        .frame(width: 480)
+        .frame(width: 520)
         .onReceive(trustRefresh) { _ in
             accessibilityTrusted = AXIsProcessTrusted()
         }
         .onChange(of: launchAtLogin) { _, enabled in
             setLaunchAtLogin(enabled)
         }
+        .onChange(of: historyRetentionDays) { _, _ in
+            historyAdmin.prune()
+            storage = historyAdmin.storage()
+        }
+        .onChange(of: audioStorageCapBytes) { _, _ in
+            historyAdmin.prune()
+            storage = historyAdmin.storage()
+        }
+        .confirmationDialog("Delete all history?", isPresented: $confirmingDeleteAll) {
+            Button("Delete \(storage.entryCount) Transcripts and All Audio", role: .destructive) {
+                historyAdmin.deleteAll()
+                storage = historyAdmin.storage()
+            }
+        } message: {
+            Text("This can't be undone. Export first if you want a copy.")
+        }
         .task {
+            storage = historyAdmin.storage()
             await loadLocales()
+        }
+    }
+
+    private var storageSummary: String {
+        let entries = storage.entryCount == 1 ? "1 transcript" : "\(storage.entryCount) transcripts"
+        guard storage.audioBytes > 0 else { return "\(entries), no audio kept." }
+        let size = ByteCountFormatStyle(style: .file).format(storage.audioBytes)
+        return "\(entries), \(size) of audio."
+    }
+
+    private func exportHistory() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Export"
+        panel.message = "Choose where to write one Markdown file per dictation, plus history.json"
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            historyAdmin.export(url)
         }
     }
 
@@ -154,6 +228,26 @@ struct SettingsView: View {
     }
 }
 
+/// The history operations Settings needs, as closures — same pattern as
+/// `ShortcutRebinder`, so the view never reaches for the store.
+@MainActor
+struct HistoryAdmin {
+    struct Storage {
+        let entryCount: Int
+        let audioBytes: Int64
+    }
+
+    var storage: () -> Storage
+    var prune: () -> Void
+    var deleteAll: () -> Void
+    var export: (URL) -> Void
+
+    static let noop = HistoryAdmin(storage: { Storage(entryCount: 0, audioBytes: 0) },
+                                   prune: {},
+                                   deleteAll: {},
+                                   export: { _ in })
+}
+
 #Preview {
-    SettingsView(rebinder: .noop, onOpenHistory: {})
+    SettingsView(rebinder: .noop, onOpenHistory: {}, historyAdmin: .noop)
 }
