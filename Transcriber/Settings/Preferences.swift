@@ -101,6 +101,10 @@ final class Preferences {
         }
     }
 
+    /// Whether the system Accessibility prompt has been shown *since the app was
+    /// last known to be trusted* — not "ever". `OutputRouter` clears it every
+    /// time it observes a live grant, so a grant that later stops applying earns
+    /// the user one fresh prompt instead of permanent silence.
     var accessibilityPromptShown: Bool {
         get { defaults.bool(forKey: Key.accessibilityPromptShown) }
         set { defaults.set(newValue, forKey: Key.accessibilityPromptShown) }

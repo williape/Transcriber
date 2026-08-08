@@ -35,9 +35,16 @@ final class AppState {
     /// Microphone input level, 0...1, updated ~10×/s while recording.
     private(set) var audioLevel: Double = 0
 
+    struct Notice: Equatable {
+        let text: String
+        /// SF Symbol shown beside the text — the reason differs enough between
+        /// notices that one fixed icon would be misleading.
+        let symbol: String
+    }
+
     /// Transient message shown in the panel instead of the transcript
     /// (e.g. "No speech detected" before dismissal).
-    private(set) var notice: String?
+    private(set) var notice: Notice?
 
     private let logger = Logger(subsystem: "com.pwilliams.Transcriber", category: "AppState")
 
@@ -65,8 +72,8 @@ final class AppState {
         audioLevel = level
     }
 
-    func showNotice(_ text: String) {
-        notice = text
+    func showNotice(_ text: String, symbol: String = "mic.slash") {
+        notice = Notice(text: text, symbol: symbol)
     }
 
     private static func sameKind(_ a: Session, _ b: Session) -> Bool {

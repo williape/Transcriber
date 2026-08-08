@@ -81,10 +81,29 @@ final class OutputRouter {
         return false
     }
 
-    /// Shows the system Accessibility onboarding dialog on the first refusal;
+    /// True when the user has asked for direct insertion but the Accessibility
+    /// grant it depends on is missing — i.e. transcripts are landing on the
+    /// clipboard when they were meant to be typed. The caller surfaces this,
+    /// because a silent fallback looks identical to the app being broken.
+    var isMissingAccessibilityGrant: Bool {
+        Preferences.shared.insertionMode == .paste && !AXIsProcessTrusted()
+    }
+
+    /// Shows the system Accessibility onboarding dialog once per loss of trust;
     /// afterwards falls back silently (Settings has a shortcut button too).
     private func ensureAccessibilityTrust() -> Bool {
         if AXIsProcessTrusted() {
+            // Re-arm the one-time prompt. A grant that exists today can stop
+            // applying tomorrow: TCC matches the code's *designated
+            // requirement*, not the bundle id, so re-signing with a different
+            // identity — a Debug build becoming a Developer ID release, say —
+            // silently invalidates it. Without this, the prompt had fired once
+            // ever and the user was never asked again, leaving every transcript
+            // to fall back to the clipboard with no explanation.
+            if Preferences.shared.accessibilityPromptShown {
+                Preferences.shared.accessibilityPromptShown = false
+                logger.info("Accessibility trust confirmed; re-armed the onboarding prompt")
+            }
             return true
         }
         if !Preferences.shared.accessibilityPromptShown {

@@ -41,14 +41,16 @@ struct DictationView: View {
         }
     }
 
-    private func noticeView(_ text: String) -> some View {
+    private func noticeView(_ notice: AppState.Notice) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: "mic.slash")
+            Image(systemName: notice.symbol)
                 .font(.system(size: 16))
-            Text(text)
+            Text(notice.text)
                 .font(.system(size: 14))
+                .multilineTextAlignment(.center)
         }
         .foregroundStyle(.secondary)
+        .padding(.horizontal, 12)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 

@@ -549,6 +549,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         logger.info("Delivery outcome: \(String(describing: outcome), privacy: .public)")
         // After delivery, so the archived outcome is the real one.
         recordHistory(result, outcome: outcome)
+
+        // Direct insertion was asked for and couldn't happen. The text is safe
+        // on the clipboard, but from the user's side that is indistinguishable
+        // from the app doing nothing, so say so and hold the panel long enough
+        // to read it. Other clipboard fallbacks — clipboard-only mode, secure
+        // input, an unreachable target — are either deliberate or already
+        // explained, so this notice is specific to the missing grant.
+        if outcome == .copiedToClipboard, outputRouter.isMissingAccessibilityGrant {
+            appState.showNotice("Copied to clipboard — allow Accessibility to insert directly",
+                                symbol: "hand.raised")
+            try? await Task.sleep(for: .seconds(2.5))
+        }
     }
 
     /// Delivers a finished transcript to the app the session started in.
