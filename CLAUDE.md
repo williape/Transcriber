@@ -20,6 +20,15 @@ xcodebuild -project Transcriber.xcodeproj -scheme Transcriber \
 
 App output: `build/Build/Products/Debug/Transcriber.app`
 
+## Release / distribution
+
+```sh
+./Scripts/release.sh                # archive → Developer ID export → notarize → staple → DMG
+./Scripts/release.sh --no-notarize  # same minus the two Apple round-trips (fast local check)
+```
+
+Output: `dist/Transcriber-<version>.dmg`. Signing config lives in `Config/Transcriber.entitlements` and `Config/ExportOptions.plist`; bump `MARKETING_VERSION` / `CURRENT_PROJECT_VERSION` in the pbxproj to cut a new version. Notarization needs a `notarytool` keychain profile (default name `Transcriber`, override with `NOTARY_PROFILE`) — see the script's header for the one-time `store-credentials` command.
+
 ## Run / stop
 
 Runtime behavior (hotkeys, mic, permission prompts) needs the user at the keyboard; Claude Code verifies compilation, the user does the per-phase manual check (plan §7).
@@ -53,7 +62,7 @@ log stream --predicate 'subsystem == "com.pwilliams.Transcriber"' --level debug
 ## Hard-won gotchas (from real debugging — don't rediscover these)
 
 - **Never launch the app via ⌘R in Xcode.** Xcode-run instances (a) stay attached to the debugger and survive SIGKILL until stopped in Xcode, (b) run from DerivedData with a different path, creating **duplicate TCC records** that made microphone access fail with instant denial and no Settings listing. Always build/launch via `xcodebuild` + `open build/...` as above. If mic permission misbehaves: `tccutil reset Microphone com.pwilliams.Transcriber` and check for stray instances (`pgrep -lx Transcriber`; `ps -o stat=` showing `X` = debugger-attached).
-- **Hardened Runtime must stay OFF** (`ENABLE_HARDENED_RUNTIME = NO`) until Phase 7. With it on and no `com.apple.security.device.audio-input` entitlement, mic access is silently denied — no prompt, no Settings entry. For Phase 7 notarization, re-enable it WITH that entitlement.
+- **Hardened Runtime is ON, and it only works because of the entitlement.** With it on and no `com.apple.security.device.audio-input` in `Config/Transcriber.entitlements`, mic access is silently denied — no prompt, no Settings entry. Never remove that key. (It was off through Phases 1–6 for exactly this reason; Phase 7 turned it on together with the entitlement.) The entitlements file lives in `Config/`, *not* `Transcriber/`, so the folder-synchronized group can't sweep it into the app bundle as a resource.
 - **Never hold an `AVAudioEngine` beyond one session.** An engine that has ever touched its `inputNode` keeps the input device open for as long as the object exists — `engine.stop()` is not enough. Symptoms: a Bluetooth headset gets pinned in narrowband HFP mode, so *other* apps' playback (Spotify) stays low-fidelity after dictation ends, and the orange mic-in-use indicator lingers. `MicrophoneCapture` therefore creates its engine in `start()` and releases it in `stop()`.
 - **`log` is shadowed by a zsh function in this user's shell** — always use `/usr/bin/log`, and remember `--level debug` or `.info`/`.debug` messages won't appear.
 - The user's terminal host is Apple Terminal; `open`-launched apps are their own TCC identity, so this is the safe launch path.

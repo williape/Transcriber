@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- App Sandbox stays off: direct text insertion via CGEvent and the
+	     Accessibility grant it depends on are incompatible with it. See
+	     IMPLEMENTATION_PLAN.md §1 decision 3. -->
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+
+	<!-- Required once Hardened Runtime is on. Without it the microphone is
+	     denied silently: no prompt, no entry in System Settings. -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+</dict>
+</plist>

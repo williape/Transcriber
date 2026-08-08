@@ -4,7 +4,13 @@ xcuserdata/
 DerivedData/
 build/
 
+# Release output: archives, exported app, notarised DMG
+dist/
+
 # macOS
 .DS_Store
+
+# App Store Connect API keys — secrets, never commit
+*.p8
 # roborev snapshots
 /.roborev/

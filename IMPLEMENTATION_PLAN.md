@@ -145,8 +145,19 @@ Each phase ends buildable and manually verifiable. Claude Code can verify *compi
 - Implementation notes: menu bar recording animation is a variable-color `waveform` symbol driven by the live mic level (file transcription icon became `waveform.circle` to stay distinct). "No speech detected" is derived from an empty final transcript (panel notice, 1.5 s hold) rather than a parallel `SpeechDetector` module — same user-facing result, one less module. Launch-at-login registers whatever binary path is running, i.e. the Debug build under `build/` until Phase 7 produces an installed copy.
 - **Verify:** exploratory pass through the full checklist in §7.
 
-### Phase 7 — Distribution (optional)
-- Developer ID signing + Hardened Runtime + notarization (`notarytool`), or stay with local Debug builds if it's personal-use only.
+### Phase 7 — Distribution — **✅ notarized DMG shipped 2026-08-09** (manual install check outstanding)
+
+Developer ID signing + Hardened Runtime + notarization, producing a DMG anyone can install.
+
+- **Hardened Runtime is now ON** for both Debug and Release, with `Config/Transcriber.entitlements` supplying `com.apple.security.device.audio-input` (without it the mic is denied silently — the Phase 3 trap). App Sandbox stays explicitly off. Nothing else in the app needs an exception: no `dlopen`, no `Process`, no AppleEvents, no JIT.
+- Entitlements and `ExportOptions.plist` live in **`Config/`**, deliberately outside `Transcriber/` — that folder is a file-system-synchronized group, so anything dropped in it risks being copied into the app bundle as a resource.
+- Info.plist gains `NSHumanReadableCopyright` and `NSDocumentsFolderUsageDescription` (the app's data lives in `~/Documents/Transcriber`, so an unsandboxed build triggers the Documents TCC prompt).
+- A **shared scheme** is now checked in, so `xcodebuild archive -scheme Transcriber` works from a clean checkout rather than depending on Xcode's per-user autocreated one.
+- **`Scripts/release.sh`** drives the whole thing: archive → Developer ID export → signature/entitlement assertions → notarize the app → staple → build the DMG → notarize and staple the DMG → `spctl` assessment. `--no-notarize` skips the Apple round-trips for a local check. The app is stapled as well as the DMG so a copy dragged out of the DMG launches with no network — the app's offline promise would otherwise break on first launch.
+- Credentials are an App Store Connect API key stored in the keychain as the notarytool profile `Transcriber` (key file kept outside the repo, at `~/github/keys/`).
+- Verified end-to-end 2026-08-09: exported app signed `Developer ID Application: Peter Williams (MCGN49R93E)`, `flags=0x10000(runtime)`, audio-input entitlement present, `get-task-allow` absent. Both submissions Accepted, both stapled. The app mounted from inside `Transcriber-1.0.dmg` passes `stapler validate` and assesses as `accepted / source=Notarized Developer ID`, so a copy dragged out installs and launches with no network.
+- **Fallout worth remembering (1.0.1):** the first install proved that **TCC matches a code's designated requirement, not the bundle id**. The Developer ID build demands `subject.OU = MCGN49R93E`; the old Debug build demanded leaf CN `Apple Development: … (Y3CFJ6W852)`. So the Accessibility grant stopped applying while System Settings still showed "Transcriber" ticked, and `tccutil reset Accessibility com.pwilliams.Transcriber` cleared *seven* accumulated records. The Developer ID requirement is stable across releases, so grants survive future updates. Two fixes came out of it: `accessibilityPromptShown` is re-armed whenever trust is observed (it was a permanent latch, so an invalidated grant meant the user was never asked again), and the panel now says "Copied to clipboard — allow Accessibility to insert directly" instead of falling back silently.
+- **Verify:** install from the DMG into `/Applications`, launch, grant Microphone and Accessibility to the *installed* copy, dictate, and re-tick launch-at-login so `SMAppService` registers the `/Applications` path rather than the old `build/` one. Confirm `spctl --assess --type execute /Applications/Transcriber.app` reports accepted.
 
 ### Phase 8 — Transcription history & audio retention — **✅ verified 2026-08-01**
 
