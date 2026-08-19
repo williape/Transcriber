@@ -23,6 +23,8 @@ final class Preferences {
         static let keepsAudioRecordings = "keepsAudioRecordings"
         static let historyRetentionDays = "historyRetentionDays"
         static let audioStorageCapBytes = "audioStorageCapBytes"
+        static let panelOriginX = "panelOriginX"
+        static let panelOriginY = "panelOriginY"
     }
 
     /// Byte caps offered in Settings. 0 means "no limit".
@@ -45,6 +47,26 @@ final class Preferences {
             Key.historyRetentionDays: 0,
             Key.audioStorageCapBytes: AudioCap.oneGigabyte,
         ])
+    }
+
+    /// Where the user last dragged the dictation panel, in screen coordinates.
+    /// `nil` until it has been moved, which means "use the default position".
+    var panelOrigin: NSPoint? {
+        get {
+            guard defaults.object(forKey: Key.panelOriginX) != nil,
+                  defaults.object(forKey: Key.panelOriginY) != nil else { return nil }
+            return NSPoint(x: defaults.double(forKey: Key.panelOriginX),
+                           y: defaults.double(forKey: Key.panelOriginY))
+        }
+        set {
+            guard let newValue else {
+                defaults.removeObject(forKey: Key.panelOriginX)
+                defaults.removeObject(forKey: Key.panelOriginY)
+                return
+            }
+            defaults.set(Double(newValue.x), forKey: Key.panelOriginX)
+            defaults.set(Double(newValue.y), forKey: Key.panelOriginY)
+        }
     }
 
     /// Whether each dictation's audio is written alongside its transcript.

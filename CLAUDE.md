@@ -67,6 +67,7 @@ log stream --predicate 'subsystem == "com.pwilliams.Transcriber"' --level debug
 - **`log` is shadowed by a zsh function in this user's shell** — always use `/usr/bin/log`, and remember `--level debug` or `.info`/`.debug` messages won't appear.
 - The user's terminal host is Apple Terminal; `open`-launched apps are their own TCC identity, so this is the safe launch path.
 - Esc-to-dismiss works via a transient Carbon hotkey registered only while the session is `.recording` (the non-activating panel can never receive key events). Esc is consumed globally for that window — intentional trade-off. It is deliberately *not* registered for the other panel-visible states (`.downloadingModel`, `.transcribingFile`, `.finishing`, `.inserting`) where it has no action: swallowing Esc for the length of a long file transcription would break it for every other app.
+- The panel is dragged by intercepting `.leftMouseDown` in `FloatingPanel.sendEvent` and calling `performDrag(with:)`. `isMovableByWindowBackground` alone doesn't work: the `NSHostingView` filling the borderless panel swallows the mouse-down. The interception makes the entire surface a drag handle and consumes the click, so **any clickable control added to the panel must be hit-tested before the drag starts**. Scroll events are untouched. The dragged origin is persisted (`Preferences.panelOrigin`) and clamped back onto a live screen on restore; Settings → "Dictation panel → Reset Position" clears it.
 - SDK API ground truth lives at `$(xcrun --show-sdk-path)/System/Library/Frameworks/Speech.framework/Modules/Speech.swiftmodule/arm64e-apple-macos.swiftinterface` — grep it rather than trusting blogs/memory for `SpeechAnalyzer` APIs.
 
 ## Rules
@@ -74,7 +75,7 @@ log stream --predicate 'subsystem == "com.pwilliams.Transcriber"' --level debug
 - 100% native Apple frameworks. **NO third-party packages, ever.**
 - New Swift files: just create them under `Transcriber/` — the target uses folder-synchronized groups (`PBXFileSystemSynchronizedRootGroup`), no pbxproj edits needed.
 - App is `LSUIElement` (menu-bar only, no Dock icon). **App Sandbox is intentionally OFF** — direct text insertion via CGEvent requires it (rules out Mac App Store; that's accepted).
-- The floating panel must be a **non-activating `NSPanel`** and never become key window — direct insertion into the previously focused app depends on it. Dismissal is Esc / hotkey again / click outside / insertion complete, never "loss of focus."
+- The floating panel must be a **non-activating `NSPanel`** and never become key window — direct insertion into the previously focused app depends on it. Dismissal is Esc / hotkey again / click outside / insertion complete, never "loss of focus." It is draggable anywhere on screen and remembers where the user left it.
 - Global hotkey uses Carbon `RegisterEventHotKey` (no TCC permission, consumes the event) — not `NSEvent.addGlobalMonitorForEvents`.
 - File transcription uses `analyzer.analyzeSequence(from: AVAudioFile)` + `finalizeAndFinish(through:)`; there is no `AssetInputSequenceProvider` API.
 - `SpeechAnalyzer` is new — confirm exact signatures against the installed Xcode SDK headers, not blog posts.

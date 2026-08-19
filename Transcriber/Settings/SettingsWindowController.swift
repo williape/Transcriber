@@ -12,9 +12,11 @@ import SwiftUI
 final class SettingsWindowController: NSWindowController {
     convenience init(rebinder: ShortcutRebinder,
                      onOpenHistory: @escaping () -> Void,
+                     onResetPanelPosition: @escaping () -> Void,
                      historyAdmin: HistoryAdmin) {
         let hosting = NSHostingController(rootView: SettingsView(rebinder: rebinder,
                                                                 onOpenHistory: onOpenHistory,
+                                                                onResetPanelPosition: onResetPanelPosition,
                                                                 historyAdmin: historyAdmin))
         let window = NSWindow(contentViewController: hosting)
         window.title = "Transcriber Settings"

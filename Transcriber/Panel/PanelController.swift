@@ -13,9 +13,10 @@ import os
 /// Carbon hotkey is registered only while a recording is live (see
 /// `updateEscapeRegistration`).
 @MainActor
-final class PanelController {
+final class PanelController: NSObject {
     private let appState: AppState
     private let hotkeyManager: HotkeyManager
+    private let preferences = Preferences.shared
     private var panel: FloatingPanel?
     private var escapeHotkeyID: HotkeyManager.HotkeyID?
     private let logger = Logger(subsystem: "com.pwilliams.Transcriber", category: "Panel")
@@ -23,6 +24,7 @@ final class PanelController {
     init(appState: AppState, hotkeyManager: HotkeyManager) {
         self.appState = appState
         self.hotkeyManager = hotkeyManager
+        super.init()
         observeState()
         sessionChanged()
     }
@@ -85,18 +87,55 @@ final class PanelController {
         let size = DictationView.panelSize
         let panel = FloatingPanel(contentRect: NSRect(origin: .zero, size: size))
         panel.contentView = NSHostingView(rootView: DictationView(appState: appState))
+        panel.delegate = self
         self.panel = panel
         return panel
     }
 
-    /// Centered horizontally, near the bottom of the active screen.
+    /// Forgets where the user dragged the panel; it returns to the default spot
+    /// the next time it appears — or immediately, if it's up right now.
+    func resetPosition() {
+        preferences.panelOrigin = nil
+        if let panel {
+            panel.setFrameOrigin(defaultOrigin(for: panel.frame.size))
+        }
+        logger.info("Panel position reset")
+    }
+
+    /// Wherever the user last dragged it, or — the first time — centered
+    /// horizontally near the bottom of the active screen.
     private func position(_ panel: NSPanel) {
-        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return }
-        let visible = screen.visibleFrame
         let size = panel.frame.size
-        let origin = NSPoint(x: visible.midX - size.width / 2,
-                             y: visible.minY + 140)
-        panel.setFrameOrigin(origin)
+        if let saved = preferences.panelOrigin {
+            panel.setFrameOrigin(onScreenOrigin(for: NSRect(origin: saved, size: size)))
+        } else {
+            panel.setFrameOrigin(defaultOrigin(for: size))
+        }
+    }
+
+    private func defaultOrigin(for size: NSSize) -> NSPoint {
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return .zero }
+        let visible = screen.visibleFrame
+        return NSPoint(x: visible.midX - size.width / 2,
+                       y: visible.minY + 140)
+    }
+
+    /// A saved position can be stale — the display it was on may be gone, or
+    /// smaller than it was. Clamp the frame into whichever screen it overlaps
+    /// most (the main screen if it overlaps none) so the panel can never come
+    /// back somewhere the user can't see or reach it.
+    private func onScreenOrigin(for frame: NSRect) -> NSPoint {
+        let overlapped = NSScreen.screens
+            .map { ($0, area(frame.intersection($0.visibleFrame))) }
+            .max { $0.1 < $1.1 }
+        let screen = (overlapped?.1 ?? 0) > 0 ? overlapped?.0 : (NSScreen.main ?? NSScreen.screens.first)
+        guard let visible = screen?.visibleFrame else { return frame.origin }
+        return NSPoint(x: min(max(frame.minX, visible.minX), visible.maxX - frame.width),
+                       y: min(max(frame.minY, visible.minY), visible.maxY - frame.height))
+    }
+
+    private func area(_ rect: NSRect) -> CGFloat {
+        rect.isNull ? 0 : rect.width * rect.height
     }
 
     private func registerEscape() {
@@ -114,5 +153,13 @@ final class PanelController {
             hotkeyManager.unregister(escapeHotkeyID)
             self.escapeHotkeyID = nil
         }
+    }
+}
+
+extension PanelController: NSWindowDelegate {
+    /// Remember where the user put it, so the next dictation starts there.
+    func windowDidMove(_ notification: Notification) {
+        guard let panel, panel === notification.object as? NSWindow else { return }
+        preferences.panelOrigin = panel.frame.origin
     }
 }

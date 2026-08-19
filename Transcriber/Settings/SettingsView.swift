@@ -12,6 +12,7 @@ import SwiftUI
 struct SettingsView: View {
     let rebinder: ShortcutRebinder
     let onOpenHistory: () -> Void
+    let onResetPanelPosition: () -> Void
     /// Settings owns the destructive history actions; the store itself lives in
     /// the app delegate.
     let historyAdmin: HistoryAdmin
@@ -43,6 +44,10 @@ struct SettingsView: View {
         Form {
             LabeledContent("Dictation shortcut") {
                 ShortcutRecorderView(rebinder: rebinder)
+            }
+
+            LabeledContent("Dictation panel") {
+                Button("Reset Position", action: onResetPanelPosition)
             }
 
             Picker("Language", selection: $localeIdentifier) {
@@ -249,5 +254,8 @@ struct HistoryAdmin {
 }
 
 #Preview {
-    SettingsView(rebinder: .noop, onOpenHistory: {}, historyAdmin: .noop)
+    SettingsView(rebinder: .noop,
+                 onOpenHistory: {},
+                 onResetPanelPosition: {},
+                 historyAdmin: .noop)
 }

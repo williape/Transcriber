@@ -711,6 +711,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             settingsWindowController = SettingsWindowController(
                 rebinder: makeShortcutRebinder(),
                 onOpenHistory: { [weak self] in self?.openHistory() },
+                onResetPanelPosition: { [weak self] in self?.panelController.resetPosition() },
                 historyAdmin: makeHistoryAdmin())
         }
         settingsWindowController?.show()
