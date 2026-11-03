@@ -172,14 +172,14 @@ Spec: `PRD - Native macOS Dictation & Transcription utility.md`, which since 202
 **Verified:** the full Phase 8 manual pass in the PRD's §14 list. The M1 store check — dictate 3×, quit, relaunch, confirm the log reports the accumulated count:
 `/usr/bin/log stream --predicate 'subsystem == "com.pwilliams.Transcriber" and category == "History"' --info`
 
-### Phase 9 — System audio in dictation — **🚧 in progress** (branch `feature/system-audio-capture`)
+### Phase 9 — System audio in dictation — **✅ verified 2026-11-03** (branch `feature/system-audio-capture`)
 
 Spec: PRD Feature 10. Plan and decisions: `PLAN - System audio capture.md`.
 
 - **Spike** — ✅ verified 2026-11-03, Debug and Developer ID / Hardened Runtime builds (no new entitlement needed). `AVAudioEngine` binds to a private mic + tap aggregate, but only delivers the tap once the AUHAL client format is widened to every channel (CLAUDE.md gotcha). Permission prompt appears on first tap; denial is silent (tap = zeros).
 - **Capture** — ✅ `SystemAudioTap`, `MicrophoneCapture` aggregate route with mic-only fallback + notice, `downmixToMono`, aggregates excluded from `AudioInputDevices` candidates. Unit tests for downmix and aggregate exclusion.
 - **Settings & notices** — ✅ verified 2026-11-03. Toggle + Open Privacy Settings… (recovers a denied permission); toggle off = plain dictation unchanged. Speaker notice at session start and on a mid-session switch to the speakers (`DefaultOutputObserver`); mid-recording notices auto-dismiss after 3 s because the panel shows a notice *instead of* the transcript.
-- **Remaining manual check** — a Zoom test call (zoom.us/test) on headphones.
+- **Zoom test call** — ✅ verified 2026-11-03 on headphones: both sides transcribed.
 
 ---
 
