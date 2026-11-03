@@ -66,6 +66,14 @@ final class MicrophoneCapture {
     /// Non-nil exactly while a session is meant to be capturing.
     private var request: Request?
     private var configurationObserver: (any NSObjectProtocol)?
+    /// What the live engine was bound to and tapped with, so a configuration
+    /// change can be checked against it rather than taken on trust.
+    private var boundDeviceID: AudioDeviceID?
+    private var tappedFormat: AVAudioFormat?
+    /// When recent rebuilds happened — the backstop against a rebuild loop.
+    private var recentRebuilds: [Date] = []
+    private static let maxRebuilds = 3
+    private static let rebuildWindow: TimeInterval = 5
     private let logger = Logger(subsystem: "com.pwilliams.Transcriber", category: "Microphone")
 
     func start(targetFormat: AVAudioFormat,
@@ -201,6 +209,8 @@ final class MicrophoneCapture {
             teardownEngine()
             throw AttachFailure.engineStartFailed(error)
         }
+        boundDeviceID = device.id
+        tappedFormat = nativeFormat
     }
 
     /// The engine posts this when its I/O device is replaced or reconfigured —
@@ -226,6 +236,39 @@ final class MicrophoneCapture {
 
     private func handleConfigurationChange(of changed: AVAudioEngine?) {
         guard let request, let engine, changed === engine else { return }
+
+        // Binding a device and starting the engine make the engine post this
+        // notification about *itself*, and it arrives after the new engine is
+        // in place. Rebuilding on every one is a feedback loop (seen live:
+        // a rebuild every ~140 ms, no audio ever reaching the analyzer). So
+        // only act when something really moved under the session.
+        let input = engine.inputNode
+        let deviceUnchanged = input.auAudioUnit.deviceID == boundDeviceID
+        let formatUnchanged = tappedFormat.map { input.outputFormat(forBus: 0) == $0 } ?? false
+        if deviceUnchanged && formatUnchanged {
+            if engine.isRunning {
+                logger.debug("Configuration change with device and format unchanged — ignoring")
+                return
+            }
+            // Same device, same format, just stopped: restarting keeps the
+            // existing tap and doesn't re-bind, so it can't feed the loop.
+            do {
+                try engine.start()
+                logger.info("Audio engine stopped by a configuration change — restarted")
+                return
+            } catch {
+                logger.error("Restart after configuration change failed: \(error.localizedDescription, privacy: .public) — rebuilding")
+            }
+        }
+
+        let now = Date()
+        recentRebuilds = recentRebuilds.filter { now.timeIntervalSince($0) < Self.rebuildWindow }
+        guard recentRebuilds.count < Self.maxRebuilds else {
+            logger.error("Audio device keeps reconfiguring — not rebuilding again this session")
+            return
+        }
+        recentRebuilds.append(now)
+
         logger.info("Audio device reconfigured mid-session — rebuilding capture")
         teardownEngine()
         do {
@@ -253,6 +296,7 @@ final class MicrophoneCapture {
     /// started.
     func stop() {
         request = nil
+        recentRebuilds = []
         guard engine != nil else { return }
         teardownEngine()
         logger.info("Microphone capture stopped; input device released")
@@ -265,6 +309,8 @@ final class MicrophoneCapture {
             NotificationCenter.default.removeObserver(configurationObserver)
             self.configurationObserver = nil
         }
+        boundDeviceID = nil
+        tappedFormat = nil
         guard let engine else { return }
         self.engine = nil
         engine.inputNode.removeTap(onBus: 0)
