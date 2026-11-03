@@ -52,6 +52,7 @@ final class MicrophoneCapture {
     /// same terms when the audio device changes underneath a running session.
     private struct Request {
         let targetFormat: AVAudioFormat
+        let includeSystemAudio: Bool
         let onLevel: @Sendable (Double) -> Void
         let onBuffer: @Sendable (AVAudioPCMBuffer) -> Void
     }
@@ -70,6 +71,13 @@ final class MicrophoneCapture {
     /// change can be checked against it rather than taken on trust.
     private var boundDeviceID: AudioDeviceID?
     private var tappedFormat: AVAudioFormat?
+    /// The session's private mic + system audio aggregate, when one was asked
+    /// for and could be built. Same lifetime rule as `engine`, and released
+    /// after it.
+    private var systemAudioTap: SystemAudioTap?
+    /// Set when system audio was asked for but capture had to fall back to the
+    /// microphone alone, so the caller can say so.
+    private(set) var systemAudioUnavailable = false
     /// When recent rebuilds happened — the backstop against a rebuild loop.
     private var recentRebuilds: [Date] = []
     private static let maxRebuilds = 3
@@ -77,12 +85,17 @@ final class MicrophoneCapture {
     private let logger = Logger(subsystem: "com.pwilliams.Transcriber", category: "Microphone")
 
     func start(targetFormat: AVAudioFormat,
+               includeSystemAudio: Bool = false,
                onLevel: @escaping @Sendable (Double) -> Void,
                onBuffer: @escaping @Sendable (AVAudioPCMBuffer) -> Void) throws {
         // A previous session's engine should already be gone; be sure, so two
         // engines never hold the device at once.
         stop()
-        let request = Request(targetFormat: targetFormat, onLevel: onLevel, onBuffer: onBuffer)
+        systemAudioUnavailable = false
+        let request = Request(targetFormat: targetFormat,
+                              includeSystemAudio: includeSystemAudio,
+                              onLevel: onLevel,
+                              onBuffer: onBuffer)
         try activate(request)
         // Only recorded once capture is actually running, so a failed start
         // leaves nothing behind for the configuration observer to act on.
@@ -124,6 +137,7 @@ final class MicrophoneCapture {
     private enum AttachFailure: LocalizedError {
         case deviceBindingFailed(any Error)
         case deviceUnreadable
+        case channelsUnavailable(OSStatus)
         case converterUnavailable
         case engineStartFailed(any Error)
 
@@ -133,6 +147,8 @@ final class MicrophoneCapture {
                 return "the audio engine wouldn't select it (\(error.localizedDescription))"
             case .deviceUnreadable:
                 return "it reported no usable audio format"
+            case .channelsUnavailable(let status):
+                return "its system audio channel couldn't be opened (\(SystemAudioTap.describe(status)))"
             case .converterUnavailable:
                 return "its audio format can't be converted for transcription"
             case .engineStartFailed(let error):
@@ -141,7 +157,35 @@ final class MicrophoneCapture {
         }
     }
 
+    /// Binds to `device`, or — when system audio is wanted — to a private
+    /// aggregate of `device` plus a system audio tap. If the aggregate can't be
+    /// built or won't start, the session carries on with the mic alone rather
+    /// than failing: half a transcript beats none.
     private func attach(to device: AudioInputDevices.Device, request: Request) throws {
+        if request.includeSystemAudio {
+            do {
+                let tap = try SystemAudioTap(micUID: device.uid)
+                systemAudioTap = tap
+                try attachEngine(to: tap.aggregateDeviceID, mixingChannels: true, request: request)
+                logger.info("Capturing system audio alongside '\(device.name, privacy: .public)'")
+                return
+            } catch {
+                // `attachEngine` has already torn down the tap on its way out.
+                teardownEngine()
+                let reason = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                logger.error("System audio unavailable, continuing mic-only: \(reason, privacy: .public)")
+                systemAudioUnavailable = true
+            }
+        }
+        try attachEngine(to: device.id, mixingChannels: false, request: request)
+    }
+
+    /// `mixingChannels` sums every input channel to mono before conversion —
+    /// only for the aggregate, whose channels are mic + system audio. A plain
+    /// multi-channel mic is left to `AVAudioConverter` exactly as before.
+    private func attachEngine(to deviceID: AudioDeviceID,
+                              mixingChannels: Bool,
+                              request: Request) throws {
         let engine = AVAudioEngine()
         self.engine = engine
         let input = engine.inputNode
@@ -149,10 +193,18 @@ final class MicrophoneCapture {
         // anything: the node reports the format of whichever device it is
         // pointed at, and it can only be re-pointed while the engine is stopped.
         do {
-            try input.auAudioUnit.setDeviceID(device.id)
+            try input.auAudioUnit.setDeviceID(deviceID)
         } catch {
             teardownEngine()
             throw AttachFailure.deviceBindingFailed(error)
+        }
+        if mixingChannels {
+            do {
+                try Self.exposeAllInputChannels(of: input)
+            } catch {
+                teardownEngine()
+                throw error
+            }
         }
 
         let nativeFormat = input.outputFormat(forBus: 0)
@@ -165,7 +217,9 @@ final class MicrophoneCapture {
         // Format mismatch is the classic source of silent failures — always log both.
         logger.info("Mic native: \(nativeFormat, privacy: .public); analyzer: \(targetFormat, privacy: .public)")
 
-        guard let converter = AVAudioConverter(from: nativeFormat, to: targetFormat) else {
+        let downmix = mixingChannels && nativeFormat.channelCount > 1
+        let sourceFormat = downmix ? Self.monoFormat(sampleRate: nativeFormat.sampleRate) : nativeFormat
+        guard let sourceFormat, let converter = AVAudioConverter(from: sourceFormat, to: targetFormat) else {
             teardownEngine()
             throw AttachFailure.converterUnavailable
         }
@@ -173,7 +227,8 @@ final class MicrophoneCapture {
         let logger = self.logger
         let onLevel = request.onLevel
         let onBuffer = request.onBuffer
-        input.installTap(onBus: 0, bufferSize: 4096, format: nativeFormat) { buffer, _ in
+        input.installTap(onBus: 0, bufferSize: 4096, format: nativeFormat) { tapped, _ in
+            guard let buffer = downmix ? Self.downmixToMono(tapped) : tapped else { return }
             if let level = Self.normalizedLevel(of: buffer) {
                 onLevel(level)
             }
@@ -209,7 +264,7 @@ final class MicrophoneCapture {
             teardownEngine()
             throw AttachFailure.engineStartFailed(error)
         }
-        boundDeviceID = device.id
+        boundDeviceID = deviceID
         tappedFormat = nativeFormat
     }
 
@@ -282,6 +337,75 @@ final class MicrophoneCapture {
         }
     }
 
+    /// AUHAL hands the engine only the aggregate's *first* input stream — the
+    /// mic — unless told otherwise: the hardware side presents mic + tap, but
+    /// the client format defaults to one channel, so the system audio is
+    /// silently dropped (seen in the spike: device 2ch, `inputNode` 1ch). This
+    /// widens the client side to every hardware channel, mapped one to one.
+    /// Must run after `setDeviceID` and before the node's format is read.
+    private static func exposeAllInputChannels(of input: AVAudioInputNode) throws {
+        guard let unit = input.audioUnit else { throw AttachFailure.channelsUnavailable(kAudioUnitErr_Uninitialized) }
+        let inputElement: AudioUnitElement = 1
+        var hardware = AudioStreamBasicDescription()
+        var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        var status = AudioUnitGetProperty(unit, kAudioUnitProperty_StreamFormat,
+                                          kAudioUnitScope_Input, inputElement, &hardware, &size)
+        guard status == noErr else { throw AttachFailure.channelsUnavailable(status) }
+        let channels = hardware.mChannelsPerFrame
+        guard channels > 1 else { return }
+
+        var map = (0..<Int32(channels)).map { $0 }
+        status = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_ChannelMap,
+                                      kAudioUnitScope_Output, inputElement,
+                                      &map, UInt32(map.count * MemoryLayout<Int32>.size))
+        guard status == noErr else { throw AttachFailure.channelsUnavailable(status) }
+
+        var client = AudioStreamBasicDescription()
+        size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        status = AudioUnitGetProperty(unit, kAudioUnitProperty_StreamFormat,
+                                      kAudioUnitScope_Output, inputElement, &client, &size)
+        guard status == noErr else { throw AttachFailure.channelsUnavailable(status) }
+        guard client.mChannelsPerFrame != channels else { return }
+        // The client format is deinterleaved float, so only the channel count moves.
+        client.mChannelsPerFrame = channels
+        status = AudioUnitSetProperty(unit, kAudioUnitProperty_StreamFormat,
+                                      kAudioUnitScope_Output, inputElement, &client, size)
+        guard status == noErr else { throw AttachFailure.channelsUnavailable(status) }
+    }
+
+    nonisolated private static func monoFormat(sampleRate: Double) -> AVAudioFormat? {
+        AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: sampleRate, channels: 1, interleaved: false)
+    }
+
+    /// Sums every channel of a deinterleaved float buffer into one, clipped to
+    /// ±1. Mic and system audio arrive as separate channels of the aggregate;
+    /// the transcriber wants a single stream. Mono input comes back as is;
+    /// anything that isn't deinterleaved float yields `nil`.
+    nonisolated static func downmixToMono(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        let channels = Int(buffer.format.channelCount)
+        guard channels > 1 else { return buffer }
+        guard buffer.format.commonFormat == .pcmFormatFloat32,
+              !buffer.format.isInterleaved,
+              let source = buffer.floatChannelData,
+              let format = monoFormat(sampleRate: buffer.format.sampleRate),
+              let mono = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: max(buffer.frameLength, 1)),
+              let output = mono.floatChannelData?[0] else {
+            return nil
+        }
+        let frames = Int(buffer.frameLength)
+        mono.frameLength = buffer.frameLength
+        guard frames > 0 else { return mono }
+        let length = vDSP_Length(frames)
+        output.update(from: source[0], count: frames)
+        for channel in 1..<channels {
+            vDSP_vadd(output, 1, source[channel], 1, output, 1, length)
+        }
+        var low: Float = -1
+        var high: Float = 1
+        vDSP_vclip(output, 1, &low, &high, output, 1, length)
+        return mono
+    }
+
     /// RMS of the first channel mapped from dBFS onto 0...1 (-50 dB floor).
     private static func normalizedLevel(of buffer: AVAudioPCMBuffer) -> Double? {
         guard let channelData = buffer.floatChannelData, buffer.frameLength > 0 else { return nil }
@@ -297,7 +421,7 @@ final class MicrophoneCapture {
     func stop() {
         request = nil
         recentRebuilds = []
-        guard engine != nil else { return }
+        guard engine != nil || systemAudioTap != nil else { return }
         teardownEngine()
         logger.info("Microphone capture stopped; input device released")
     }
@@ -311,6 +435,16 @@ final class MicrophoneCapture {
         }
         boundDeviceID = nil
         tappedFormat = nil
+        releaseEngine()
+        // Only once the engine is gone: destroying an aggregate out from under
+        // a live engine is a device vanishing mid-I/O.
+        systemAudioTap?.destroy()
+        systemAudioTap = nil
+    }
+
+    /// Separate from `teardownEngine` so the last reference to the engine is
+    /// dropped when this returns, before the aggregate it was bound to goes.
+    private func releaseEngine() {
         guard let engine else { return }
         self.engine = nil
         engine.inputNode.removeTap(onBus: 0)

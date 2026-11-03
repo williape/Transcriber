@@ -407,6 +407,7 @@
 				INFOPLIST_KEY_NSDocumentsFolderUsageDescription = "Transcriber keeps your transcript history and any retained dictation audio in a Transcriber folder inside Documents.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 Peter Williams. All rights reserved.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Transcriber uses the microphone to transcribe your speech on-device.";
+				INFOPLIST_FILE = Config/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -443,6 +444,7 @@
 				INFOPLIST_KEY_NSDocumentsFolderUsageDescription = "Transcriber keeps your transcript history and any retained dictation audio in a Transcriber folder inside Documents.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 Peter Williams. All rights reserved.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Transcriber uses the microphone to transcribe your speech on-device.";
+				INFOPLIST_FILE = Config/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",

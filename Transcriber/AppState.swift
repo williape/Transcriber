@@ -40,6 +40,9 @@ final class AppState {
         /// SF Symbol shown beside the text — the reason differs enough between
         /// notices that one fixed icon would be misleading.
         let symbol: String
+        /// Distinguishes two showings of the same text, so a timed dismissal
+        /// never clears a newer notice.
+        let id = UUID()
     }
 
     /// Transient message shown in the panel instead of the transcript
@@ -72,8 +75,19 @@ final class AppState {
         audioLevel = level
     }
 
-    func showNotice(_ text: String, symbol: String = "mic.slash") {
-        notice = Notice(text: text, symbol: symbol)
+    /// The panel shows a notice *instead of* the transcript, so one raised
+    /// mid-recording must pass `dismissAfter`, or it hides the live text for
+    /// the rest of the session.
+    func showNotice(_ text: String, symbol: String = "mic.slash", dismissAfter seconds: Double? = nil) {
+        let shown = Notice(text: text, symbol: symbol)
+        notice = shown
+        guard let seconds else { return }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .seconds(seconds))
+            if self?.notice?.id == shown.id {
+                self?.notice = nil
+            }
+        }
     }
 
     private static func sameKind(_ a: Session, _ b: Session) -> Bool {

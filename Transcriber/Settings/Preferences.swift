@@ -25,6 +25,7 @@ final class Preferences {
         static let audioStorageCapBytes = "audioStorageCapBytes"
         static let panelOriginX = "panelOriginX"
         static let panelOriginY = "panelOriginY"
+        static let includesSystemAudio = "includesSystemAudio"
     }
 
     /// Byte caps offered in Settings. 0 means "no limit".
@@ -46,6 +47,7 @@ final class Preferences {
             Key.keepsAudioRecordings: false,
             Key.historyRetentionDays: 0,
             Key.audioStorageCapBytes: AudioCap.oneGigabyte,
+            Key.includesSystemAudio: false,
         ])
     }
 
@@ -67,6 +69,13 @@ final class Preferences {
             defaults.set(Double(newValue.x), forKey: Key.panelOriginX)
             defaults.set(Double(newValue.y), forKey: Key.panelOriginY)
         }
+    }
+
+    /// Whether dictation also captures what the Mac is playing (the far side of
+    /// a call), mixed with the microphone.
+    var includesSystemAudio: Bool {
+        get { defaults.bool(forKey: Key.includesSystemAudio) }
+        set { defaults.set(newValue, forKey: Key.includesSystemAudio) }
     }
 
     /// Whether each dictation's audio is written alongside its transcript.

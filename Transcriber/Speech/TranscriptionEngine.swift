@@ -73,6 +73,9 @@ final class TranscriptionEngine {
     var onLevel: ((Double) -> Void)?
 
     private let microphone = MicrophoneCapture()
+    /// True when the running session asked for system audio but is capturing
+    /// the microphone alone.
+    var systemAudioUnavailable: Bool { microphone.systemAudioUnavailable }
     private var recorder: SessionAudioRecorder?
     /// Set when audio was wanted but the recorder couldn't even be opened.
     private var recorderUnavailable = false
@@ -94,6 +97,7 @@ final class TranscriptionEngine {
     /// Prepares (permission, model) and starts the streaming session.
     func startSession(locale requestedLocale: Locale,
                       retainAudio: Bool,
+                      includeSystemAudio: Bool = false,
                       modelDownloadProgress: @escaping @Sendable (Double) -> Void) async throws {
         guard analyzer == nil, resultsTask == nil else {
             throw EngineError.sessionAlreadyRunning
@@ -171,7 +175,9 @@ final class TranscriptionEngine {
                 }
             }
             let recorder = self.recorder
-            try microphone.start(targetFormat: format, onLevel: { [weak self] level in
+            try microphone.start(targetFormat: format,
+                                 includeSystemAudio: includeSystemAudio,
+                                 onLevel: { [weak self] level in
                 guard let self else { return }
                 Task { @MainActor in
                     self.onLevel?(level)

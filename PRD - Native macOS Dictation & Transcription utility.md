@@ -26,7 +26,7 @@ Last consolidated: 2026-08-01.
 
 - Cloud sync, multi-device history, or any server-side fallback.
 - LLM post-processing of transcripts ("modes"/prompts, à la SuperWhisper). Separate future PRD.
-- Speaker diarization, system-audio/meeting capture, or a waveform editor.
+- Speaker diarization ("Me / Them" labels) or a waveform editor. System-audio capture *is* in scope since 2026-11-03 — see Feature 10.
 - Encryption at rest (see §11.4 — FileVault is the answer; a Keychain-keyed store is deferred).
 - Full-text search ranking, tags, or folders. Search is substring + date grouping.
 - History for file transcriptions (§4.6).
@@ -172,6 +172,16 @@ Each is a judgment call with a reason; §16 lists what was rejected.
 - **F9.11** Menu bar item **Copy Last Transcript** (no new global hotkey).
 - **F9.12** Pruning runs at launch and after each history write, off the main actor. Age-expiry deletes the entry **and** its audio; size-cap deletes audio only, marking the entry `audioPrunedAt`. All pruning is logged with counts and bytes reclaimed.
 - **F9.13** Launch reconciliation: audio files with no owning entry and an mtime older than 60 s are deleted; entries whose audio file is missing have their reference cleared.
+
+### Feature 10 — System audio in dictation
+
+For calls on headphones, where the far side never reaches the mic.
+
+- **F10.1** Settings toggle **Also transcribe system audio (use headphones)**, default **off**. With it on, a dictation captures everything the Mac plays — except Transcriber's own sounds — mixed with the mic into **one** transcript. No speaker labels.
+- **F10.2** Output, history and audio retention are unchanged: stop, paste into the active app; a mixed session is stored like any other dictation (no schema change).
+- **F10.3** Mechanism: a CoreAudio process tap (`CATapDescription(monoGlobalTapButExcludeProcesses:)`, private, unmuted) wrapped with the session mic in a private aggregate device (mic = clock master, tap drift-corrected). `AVAudioEngine` binds to the aggregate; the two channels are summed to mono before the existing converter. Created per session, destroyed with the engine.
+- **F10.4** Failure to build the aggregate falls back to mic-only with a one-line notice. A **denied** permission can't be detected — the tap records silence — so Settings shows **Open Privacy Settings…** while the toggle is on.
+- **F10.5** With the built-in speakers as output, a notice warns that call audio may be transcribed twice (the mic hears it too). Echo cancellation is out of scope.
 
 ---
 
@@ -377,6 +387,7 @@ Plus: dictation shortcut recorder, launch-at-login, the Accessibility status row
 |---|---|---|---|
 | Microphone | live dictation | first mic tap | via `NSMicrophoneUsageDescription` |
 | Accessibility | CGEvent paste | manual grant; detected via `AXIsProcessTrusted` | user toggles it in System Settings |
+| System Audio Recording Only | system audio in dictation (F10) | first tap of a session with the toggle on | via `NSAudioCaptureUsageDescription` (in `Config/Info.plist`); no preflight API, denial = silence |
 | Input Monitoring | — | never | avoided by the Carbon hotkey |
 | Speech Recognition | — | never | `SpeechAnalyzer` needs no `SFSpeechRecognizer` auth |
 

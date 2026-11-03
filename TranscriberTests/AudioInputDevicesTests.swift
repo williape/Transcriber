@@ -54,4 +54,14 @@ struct AudioInputDevicesTests {
         let speakers = device(3, name: "External Headphones", inputChannels: 0)
         #expect(AudioInputDevices.order(preferred: nil, available: [speakers]).isEmpty)
     }
+
+    /// macOS's `CADefaultDeviceAggregate-<pid>` and our own private system
+    /// audio aggregate both present input channels; neither is a microphone.
+    @Test func aggregatesAreNeverCandidates() {
+        let builtIn = device(1, name: "MacBook Pro Microphone")
+        var aggregate = device(7, name: "CADefaultDeviceAggregate-123", inputChannels: 2)
+        aggregate.transportType = kAudioDeviceTransportTypeAggregate
+        #expect(AudioInputDevices.order(preferred: builtIn, available: [aggregate, builtIn]) == [builtIn])
+        #expect(AudioInputDevices.order(preferred: aggregate, available: [aggregate, builtIn]) == [builtIn])
+    }
 }

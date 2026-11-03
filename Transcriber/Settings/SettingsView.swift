@@ -20,6 +20,7 @@ struct SettingsView: View {
     // Same UserDefaults keys Preferences uses.
     @AppStorage("insertionMode") private var insertionMode = OutputRouter.InsertionMode.paste.rawValue
     @AppStorage("playsSounds") private var playsSounds = true
+    @AppStorage("includesSystemAudio") private var includesSystemAudio = false
     @AppStorage("localeIdentifier") private var localeIdentifier = ""
     @AppStorage("keepsTranscriptHistory") private var keepsTranscriptHistory = true
     @AppStorage("keepsAudioRecordings") private var keepsAudioRecordings = false
@@ -66,6 +67,18 @@ struct SettingsView: View {
                 Text("Copying to the clipboard only").tag(OutputRouter.InsertionMode.clipboardOnly.rawValue)
             }
             .pickerStyle(.radioGroup)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle("Also transcribe system audio (use headphones)", isOn: $includesSystemAudio)
+                if includesSystemAudio {
+                    // A denial can't be detected — the tap just records
+                    // silence — so the way to fix it stays in view.
+                    Button("Open Privacy Settings…") {
+                        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            }
 
             Toggle("Play sounds when dictation starts and stops", isOn: $playsSounds)
 

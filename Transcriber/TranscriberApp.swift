@@ -38,6 +38,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var settingsWindowController: SettingsWindowController?
     private var transcriptWindows: [TranscriptWindowController] = []
     private var sessionTask: Task<Void, Never>?
+    /// Watches for a switch to the speakers while a system audio session runs.
+    private var outputObserver: DefaultOutputObserver?
     private var mainHotkeyID: HotkeyManager.HotkeyID?
     /// The app that was frontmost when recording started — which, because the
     /// panel never activates, is normally still the insertion target when it
@@ -457,10 +459,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 try await engine.startSession(
                     locale: Preferences.shared.selectedLocale,
                     retainAudio: shouldRetainAudio(),
+                    includeSystemAudio: Preferences.shared.includesSystemAudio,
                     modelDownloadProgress: progressSink(.modelDownload, generation: generation))
                 operationGeneration += 1
                 appState.transition(to: .recording)
                 SoundPlayer.playStart()
+                if engine.systemAudioUnavailable {
+                    appState.showNotice("System audio unavailable — microphone only", symbol: "speaker.slash", dismissAfter: 3)
+                } else if Preferences.shared.includesSystemAudio {
+                    warnIfUsingSpeakers()
+                    // Checked again on every output change: unplugging the
+                    // headphones mid-call is the likeliest way to end up here.
+                    outputObserver = DefaultOutputObserver { [weak self] in
+                        guard let self, self.appState.session == .recording else { return }
+                        self.warnIfUsingSpeakers()
+                    }
+                }
             } catch {
                 operationGeneration += 1
                 appState.transition(to: .idle)
@@ -469,8 +483,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// With speakers as output the mic hears the far side too, so it would be
+    /// transcribed twice.
+    private func warnIfUsingSpeakers() {
+        guard AudioInputDevices.defaultOutputIsBuiltInSpeakers() else { return }
+        appState.showNotice("Using speakers — call audio may be transcribed twice",
+                            symbol: "speaker.wave.2", dismissAfter: 3)
+    }
+
     private func stopDictation() {
         guard appState.session == .recording, sessionTask == nil else { return }
+        outputObserver?.stop()
+        outputObserver = nil
         // Leave `.recording` synchronously so a second hotkey press can't
         // start an overlapping finish.
         appState.transition(to: .finishing)
@@ -688,6 +712,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func cancelDictation() {
         guard appState.session == .recording, sessionTask == nil else { return }
+        outputObserver?.stop()
+        outputObserver = nil
         // Same reasoning as `stopDictation`: the state has to move off
         // `.recording` before the first `await`, or repeated Escape presses
         // each spawn their own cancellation and stop the microphone twice.
