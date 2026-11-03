@@ -42,92 +42,60 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        Form {
-            LabeledContent("Dictation shortcut") {
+        // A two-column grid rather than `Form`: labels right-aligned in one
+        // column, every control starting on the same left edge in the other.
+        // `Form` only lines things up for rows that carry their own label,
+        // and nested labelled pickers and bare toggles broke the edge.
+        Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 10) {
+            row("Shortcut") {
                 ShortcutRecorderView(rebinder: rebinder)
             }
 
-            LabeledContent("Dictation panel") {
+            row("Language") {
+                Picker("Language", selection: $localeIdentifier) {
+                    Text("System (\(displayName(for: Locale.current)))").tag("")
+                    if !localeOptions.isEmpty {
+                        Divider()
+                    }
+                    ForEach(localeOptions) { option in
+                        Text(option.installed ? option.name : "\(option.name) (downloads on first use)")
+                            .tag(option.id)
+                    }
+                }
+                .labelsHidden()
+                .fixedSize()
+            }
+
+            row("Output") {
+                Picker("Output", selection: $insertionMode) {
+                    Text("Paste into the active app").tag(OutputRouter.InsertionMode.paste.rawValue)
+                    Text("Copy to the clipboard only").tag(OutputRouter.InsertionMode.clipboardOnly.rawValue)
+                }
+                .pickerStyle(.radioGroup)
+                .labelsHidden()
+            }
+
+            row("Audio") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Toggle("Include system audio (use headphones)", isOn: $includesSystemAudio)
+                    if includesSystemAudio {
+                        // A denial can't be detected — the tap just records
+                        // silence — so the way to fix it stays in view.
+                        Button("Open Privacy Settings…") {
+                            openPrivacyPane("Privacy_ScreenCapture")
+                        }
+                    }
+                    Toggle("Play start and stop sounds", isOn: $playsSounds)
+                }
+            }
+
+            row("Panel") {
                 Button("Reset Position", action: onResetPanelPosition)
             }
 
-            Picker("Language", selection: $localeIdentifier) {
-                Text("System (\(displayName(for: Locale.current)))").tag("")
-                if !localeOptions.isEmpty {
-                    Divider()
-                }
-                ForEach(localeOptions) { option in
-                    Text(option.installed ? option.name : "\(option.name) — downloads on first use")
-                        .tag(option.id)
-                }
-            }
-
-            Picker("Insert text by", selection: $insertionMode) {
-                Text("Pasting into the active app").tag(OutputRouter.InsertionMode.paste.rawValue)
-                Text("Copying to the clipboard only").tag(OutputRouter.InsertionMode.clipboardOnly.rawValue)
-            }
-            .pickerStyle(.radioGroup)
-
-            VStack(alignment: .leading, spacing: 6) {
-                Toggle("Also transcribe system audio (use headphones)", isOn: $includesSystemAudio)
-                if includesSystemAudio {
-                    // A denial can't be detected — the tap just records
-                    // silence — so the way to fix it stays in view.
-                    Button("Open Privacy Settings…") {
-                        let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
-                        NSWorkspace.shared.open(url)
-                    }
-                }
-            }
-
-            Toggle("Play sounds when dictation starts and stops", isOn: $playsSounds)
-
-            LabeledContent("History") {
-                VStack(alignment: .leading, spacing: 8) {
-                    Toggle("Keep finished dictations", isOn: $keepsTranscriptHistory)
-                    Toggle("Also keep the audio recording (about 11 MB per hour)",
-                           isOn: $keepsAudioRecordings)
-                        .disabled(!keepsTranscriptHistory)
-
-                    Picker("Delete after", selection: $historyRetentionDays) {
-                        Text("Never").tag(0)
-                        Text("7 days").tag(7)
-                        Text("30 days").tag(30)
-                        Text("90 days").tag(90)
-                        Text("1 year").tag(365)
-                    }
-                    .disabled(!keepsTranscriptHistory)
-
-                    Picker("Limit audio to", selection: $audioStorageCapBytes) {
-                        Text("No limit").tag(0)
-                        Text("500 MB").tag(524_288_000)
-                        Text("1 GB").tag(1_073_741_824)
-                        Text("5 GB").tag(5_368_709_120)
-                    }
-                    .disabled(!keepsTranscriptHistory || !keepsAudioRecordings)
-
-                    Text(storageSummary)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-
-                    HStack {
-                        Button("Open History…") {
-                            onOpenHistory()
-                        }
-                        Button("Reveal Folder") {
-                            revealStorageFolder()
-                        }
-                        Button("Export…", action: exportHistory)
-                        Button("Delete All…") {
-                            confirmingDeleteAll = true
-                        }
-                    }
-                }
-            }
-
-            LabeledContent("Launch at login") {
+            row("Login") {
                 VStack(alignment: .leading, spacing: 4) {
-                    Toggle("Start Transcriber when you log in", isOn: $launchAtLogin)
+                    Toggle("Open at login", isOn: $launchAtLogin)
                     if let launchAtLoginError {
                         Text(launchAtLoginError)
                             .font(.footnote)
@@ -136,25 +104,74 @@ struct SettingsView: View {
                 }
             }
 
-            LabeledContent("Accessibility") {
+            row("Accessibility") {
                 if accessibilityTrusted {
                     Label("Granted", systemImage: "checkmark.circle.fill")
                         .foregroundStyle(.green)
                 } else {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Required for direct insertion; without it, text is copied to the clipboard instead.")
-                            .font(.footnote)
+                        Text("Required for direct insertion.")
                             .foregroundStyle(.secondary)
                         Button("Open Accessibility Settings…") {
-                            let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
-                            NSWorkspace.shared.open(url)
+                            openPrivacyPane("Privacy_Accessibility")
                         }
                     }
                 }
             }
+
+            sectionDivider
+
+            row("History") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Toggle("Keep dictations", isOn: $keepsTranscriptHistory)
+                    Toggle("Keep audio (about 11 MB per hour)", isOn: $keepsAudioRecordings)
+                        .disabled(!keepsTranscriptHistory)
+                }
+            }
+
+            row("Delete after") {
+                Picker("Delete after", selection: $historyRetentionDays) {
+                    Text("Never").tag(0)
+                    Text("7 days").tag(7)
+                    Text("30 days").tag(30)
+                    Text("90 days").tag(90)
+                    Text("1 year").tag(365)
+                }
+                .labelsHidden()
+                .fixedSize()
+                .disabled(!keepsTranscriptHistory)
+            }
+
+            row("Audio limit") {
+                Picker("Audio limit", selection: $audioStorageCapBytes) {
+                    Text("No limit").tag(0)
+                    Text("500 MB").tag(524_288_000)
+                    Text("1 GB").tag(1_073_741_824)
+                    Text("5 GB").tag(5_368_709_120)
+                }
+                .labelsHidden()
+                .fixedSize()
+                .disabled(!keepsTranscriptHistory || !keepsAudioRecordings)
+            }
+
+            row("Stored") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(storageSummary)
+                        .foregroundStyle(.secondary)
+                    HStack {
+                        Button("Open History…", action: onOpenHistory)
+                        Button("Reveal Folder", action: revealStorageFolder)
+                        Button("Export…", action: exportHistory)
+                        Button("Delete All…") {
+                            confirmingDeleteAll = true
+                        }
+                    }
+                }
+            }
+
         }
         .padding(20)
-        .frame(width: 520)
+        .frame(width: 520, alignment: .leading)
         .onReceive(trustRefresh) { _ in
             accessibilityTrusted = AXIsProcessTrusted()
         }
@@ -181,6 +198,29 @@ struct SettingsView: View {
             storage = historyAdmin.storage()
             await loadLocales()
         }
+    }
+
+    /// One grid row: the label right-aligned in the first column, the
+    /// control leading-aligned in the second.
+    private func row<Content: View>(_ label: String,
+                                    @ViewBuilder content: () -> Content) -> some View {
+        GridRow {
+            Text(label)
+                .gridColumnAlignment(.trailing)
+            content()
+                .gridColumnAlignment(.leading)
+        }
+    }
+
+    private var sectionDivider: some View {
+        Divider()
+            .gridCellColumns(2)
+            .padding(.vertical, 4)
+    }
+
+    private func openPrivacyPane(_ anchor: String) {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(anchor)") else { return }
+        NSWorkspace.shared.open(url)
     }
 
     private var storageSummary: String {
